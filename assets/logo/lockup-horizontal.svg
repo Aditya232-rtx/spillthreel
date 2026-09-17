@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1260 220" width="1260" height="220">
+  <g transform="translate(20,10)">
+    <g transform="rotate(-8 100 100)">
+      <path d="M60,40 C40,20 20,40 25,70 C10,90 20,120 45,130 C50,160 90,170 115,150 C150,160 180,130 165,100 C185,80 170,45 140,45 C130,20 90,15 60,40 Z" fill="#E8AC3D" stroke="#15170F" stroke-width="7" stroke-linejoin="round"/>
+      <path d="M100,35 C95,60 105,90 95,115 C105,135 95,155 100,165" fill="none" stroke="#15170F" stroke-width="4" stroke-linecap="round"/>
+      <g transform="rotate(-11 100 100)">
+        <rect x="8" y="90" width="184" height="26" fill="#15170F"/>
+        <circle cx="26"  cy="103" r="4.5" fill="#F3EFE2"/>
+        <circle cx="58"  cy="103" r="4.5" fill="#F3EFE2"/>
+        <circle cx="90"  cy="103" r="4.5" fill="#F3EFE2"/>
+        <circle cx="122" cy="103" r="4.5" fill="#F3EFE2"/>
+        <circle cx="154" cy="103" r="4.5" fill="#F3EFE2"/>
+        <circle cx="174" cy="103" r="4.5" fill="#F3EFE2"/>
+      </g>
+    </g>
+  </g>
+  <text x="240" y="140" font-family="Archivo Black, Arial Black, sans-serif" font-size="88" font-weight="900" fill="#15170F" letter-spacing="-2">SPILLTHEREEL</text>
+</svg>

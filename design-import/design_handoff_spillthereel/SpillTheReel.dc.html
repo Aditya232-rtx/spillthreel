@@ -1,0 +1,754 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./image-slot.js"></script>
+<style>
+@font-face{font-family:'Oswald';src:url('./fonts/Oswald-Variable.ttf') format('truetype');font-weight:200 700;font-style:normal;}
+@font-face{font-family:'MyLove';src:url('./fonts/MyLove.otf') format('opentype');font-weight:400;font-style:normal;}
+body{margin:0;background:#EDEAE0;font-family:'Oswald',sans-serif;}
+a{color:#15170F;text-decoration:underline}
+a:hover{color:#E85C3F}
+input::placeholder{color:rgba(21,23,15,0.5)}
+.chat-input::placeholder{color:rgba(243,239,226,0.55)}
+@keyframes dotPop{0%{transform:scale(0);opacity:0}55%{transform:scale(1.22);opacity:1}100%{transform:scale(1);opacity:1}}
+@keyframes fadeOutQuick{to{opacity:0}}
+@keyframes burstOut{0%{transform:translate(var(--dx),var(--dy)) scale(0);opacity:0}55%{transform:translate(calc(var(--dx) * 0.08),calc(var(--dy) * 0.08)) scale(1.2);opacity:1}100%{transform:translate(0,0) scale(1);opacity:1}}
+@keyframes collapseIn{0%{transform:translate(0,0) scale(1);opacity:1}100%{transform:translate(var(--dx),var(--dy)) scale(0);opacity:0}}
+@keyframes logoReveal{from{opacity:0;transform:scale(0.3)}to{opacity:1;transform:scale(1)}}
+@keyframes markSettle{0%{transform:scale(1)}100%{transform:scale(0.55)}}
+@keyframes riseIn{from{opacity:0;transform:translateY(14px)}to{opacity:1;transform:translateY(0)}}
+</style>
+</helmet>
+<div style="display:flex;flex-direction:column;align-items:center;gap:18px;padding:36px 16px 60px;background:#EDEAE0;min-height:100vh;box-sizing:border-box">
+
+<x-import component-from-global-scope="IOSDevice" from="./ios-frame.jsx" dark="{{ isChat }}" width="{{ deviceW }}" height="{{ deviceH }}" hint-size="390,844">
+
+<sc-if value="{{ isWelcome }}" hint-placeholder-val="{{ true }}">
+<div style="width:390px;height:844px;box-sizing:border-box;overflow:hidden;position:relative;background:#F3EFE2">
+  <div style="position:absolute;top:60px;right:26px;transform:rotate(8deg);background:#E8AC3D;border:2.5px solid #15170F;border-radius:999px;padding:6px 14px;box-shadow:3px 3px 0 #15170F;font-family:'Oswald',sans-serif;font-weight:700;font-size:10.5px;letter-spacing:0.03em;color:#15170F">AI-POWERED ✦</div>
+  <div style="height:100%;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:54px 26px 40px;gap:20px;box-sizing:border-box">
+    <div style="position:relative;width:180px;height:180px">
+      <svg viewBox="0 0 200 200" width="180" height="180" style="position:absolute;inset:0;animation:markSettle 0.4s ease-in-out 2.0s both;overflow:visible">
+        <g fill="#15170F">
+          <circle cx="100" cy="100" r="17" style="transform-origin:100px 100px;animation:dotPop 0.3s cubic-bezier(0.34,1.56,0.64,1) 0s both, fadeOutQuick 0.08s linear 0.3s forwards"></circle>
+          <circle cx="100" cy="58" r="17" style="--dx:0px;--dy:42px;transform-origin:100px 58px;animation:burstOut 0.4s cubic-bezier(0.34,1.4,0.64,1) 0.3s both, collapseIn 0.35s ease-in 1.35s forwards"></circle>
+          <circle cx="136.4" cy="79" r="17" style="--dx:-36.4px;--dy:21px;transform-origin:136.4px 79px;animation:burstOut 0.4s cubic-bezier(0.34,1.4,0.64,1) 0.3s both, collapseIn 0.35s ease-in 1.35s forwards"></circle>
+          <circle cx="136.4" cy="121" r="17" style="--dx:-36.4px;--dy:-21px;transform-origin:136.4px 121px;animation:burstOut 0.4s cubic-bezier(0.34,1.4,0.64,1) 0.3s both, collapseIn 0.35s ease-in 1.35s forwards"></circle>
+          <circle cx="100" cy="142" r="17" style="--dx:0px;--dy:-42px;transform-origin:100px 142px;animation:burstOut 0.4s cubic-bezier(0.34,1.4,0.64,1) 0.3s both, collapseIn 0.35s ease-in 1.35s forwards"></circle>
+          <circle cx="63.6" cy="121" r="17" style="--dx:36.4px;--dy:-21px;transform-origin:63.6px 121px;animation:burstOut 0.4s cubic-bezier(0.34,1.4,0.64,1) 0.3s both, collapseIn 0.35s ease-in 1.35s forwards"></circle>
+          <circle cx="63.6" cy="79" r="17" style="--dx:36.4px;--dy:21px;transform-origin:63.6px 79px;animation:burstOut 0.4s cubic-bezier(0.34,1.4,0.64,1) 0.3s both, collapseIn 0.35s ease-in 1.35s forwards"></circle>
+        </g>
+      </svg>
+      <img src="./logo-mark-transparent.png" alt="Spillthereel" style="position:absolute;inset:0;width:100%;height:100%;object-fit:contain;opacity:0;animation:logoReveal 0.4s ease-out 1.55s forwards, markSettle 0.4s ease-in-out 2.0s both">
+    </div>
+    <div style="opacity:0;animation:riseIn 0.55s ease-out 2.3s forwards;display:flex;flex-direction:column;align-items:center;gap:20px">
+      <div style="font-family:'MyLove',cursive;font-size:19px;color:#15170F;width:100%;text-align:center;white-space:nowrap">Spillthereel</div>
+      <div style="font-family:'Oswald',sans-serif;font-weight:700;font-size:46px;line-height:44px;letter-spacing:-0.03em;color:#15170F;text-align:center;text-transform:uppercase">STOP<br>RE-SCROLLING.<br><span style="color:#E85C3F">START ASKING.</span></div>
+      <div style="font-family:'Oswald',sans-serif;font-weight:600;font-size:14px;line-height:20px;color:rgba(21,23,15,0.78);text-align:center;max-width:250px">Save any reel. Get it back by just asking — recipes, workouts, that one travel tip.</div>
+      <button onClick="{{ go_login }}" style="width:100%;min-height:54px;border-radius:999px;border:2.5px solid #15170F;background:#15170F;box-shadow:4px 4px 0 #E8AC3D;color:#F3EFE2;font-family:'Oswald',sans-serif;font-weight:700;font-size:16px;letter-spacing:-0.01em;text-transform:uppercase;cursor:pointer" style-active="transform:translate(3px,3px);box-shadow:1px 1px 0 #E8AC3D">Log in</button>
+      <button onClick="{{ go_signup }}" style="width:100%;min-height:54px;border-radius:999px;border:2.5px solid #15170F;background:#E85C3F;box-shadow:4px 4px 0 #15170F;color:#FFFFFF;font-family:'Oswald',sans-serif;font-weight:700;font-size:16px;letter-spacing:-0.01em;text-transform:uppercase;cursor:pointer" style-active="transform:translate(3px,3px);box-shadow:1px 1px 0 #15170F">Sign up</button>
+    </div>
+  </div>
+  <div style="position:absolute;bottom:16px;left:0;right:0;text-align:center;font-family:'Oswald',sans-serif;font-size:9.5px;letter-spacing:0.1em;color:rgba(21,23,15,0.5)">BY CONTINUING YOU AGREE TO OUR TERMS AND PRIVACY POLICY.</div>
+</div>
+</sc-if>
+
+<sc-if value="{{ isImport1 }}" hint-placeholder-val="{{ false }}">
+<div style="width:390px;height:844px;box-sizing:border-box;overflow:hidden;position:relative;background:#F3EFE2">
+  <div style="height:100%;display:flex;flex-direction:column;align-items:center;padding:54px 28px 40px;box-sizing:border-box;gap:16px">
+    <div style="display:flex;gap:8px;align-self:flex-start">
+      <div style="width:22px;height:8px;border-radius:999px;background:#E85C3F"></div>
+      <div style="width:22px;height:8px;border-radius:999px;border:2px solid #15170F;box-sizing:border-box"></div>
+      <div style="width:22px;height:8px;border-radius:999px;border:2px solid #15170F;box-sizing:border-box"></div>
+    </div>
+    <div style="flex:1;width:100%;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:16px">
+      
+      <img src="./import1-illustration.svg" alt="" style="width:190px;height:190px;display:block">
+      <div style="font-family:'Oswald',sans-serif;font-weight:700;font-size:30px;line-height:32px;letter-spacing:-0.01em;color:#15170F;text-align:center;text-transform:uppercase">BRING IN THE<br>REELS YOU<br>ALREADY SAVED.</div>
+      <div style="font-family:'Oswald',sans-serif;font-weight:500;font-size:14px;line-height:20px;color:rgba(21,23,15,0.78);text-align:center">Instagram lets you export your saved reels. Feed that file into SpillTheReel and every saved reel becomes searchable, with the caption, creator, and hashtags, in under a minute.</div>
+    </div>
+    <button onClick="{{ go_import2 }}" style="width:100%;min-height:48px;border-radius:999px;border:2px solid #15170F;background:#E85C3F;color:#FFFFFF;font-family:'Oswald',sans-serif;font-weight:700;font-size:15px;letter-spacing:-0.01em;text-transform:uppercase;cursor:pointer">Show me how</button>
+    <button onClick="{{ go_home }}" style="background:none;border:none;color:#15170F;font-family:'Oswald',sans-serif;font-size:12.5px;text-decoration:underline;cursor:pointer">Maybe later</button>
+    <div style="font-family:'Oswald',sans-serif;font-size:10.5px;letter-spacing:0.08em;color:rgba(21,23,15,0.55)">YOU CAN ALWAYS IMPORT FROM SETTINGS LATER.</div>
+  </div>
+</div>
+</sc-if>
+
+<sc-if value="{{ isImport2 }}" hint-placeholder-val="{{ false }}">
+<div style="width:390px;height:844px;box-sizing:border-box;overflow:hidden;position:relative;background:#F3EFE2">
+  <div style="height:100%;display:flex;flex-direction:column;padding:54px 20px 24px;box-sizing:border-box;gap:14px;overflow-y:auto">
+    <div style="display:flex;gap:8px">
+      <div style="width:22px;height:8px;border-radius:999px;background:#E85C3F"></div>
+      <div style="width:22px;height:8px;border-radius:999px;background:#E85C3F"></div>
+      <div style="width:22px;height:8px;border-radius:999px;border:2px solid #15170F;box-sizing:border-box"></div>
+    </div>
+    <div style="font-family:'Oswald',sans-serif;font-weight:700;font-size:30px;line-height:32px;letter-spacing:-0.01em;color:#15170F;text-transform:uppercase;margin-top:4px">GRAB YOUR<br>DATA FROM<br>INSTAGRAM.</div>
+    <div style="display:flex;flex-direction:column;gap:12px;margin-top:6px">
+      <sc-for list="{{ exportSteps }}" as="step" hint-placeholder-count="4">
+        <div style="display:flex;gap:14px;background:#F3EFE2;border:2px solid #15170F;border-radius:18px;padding:16px">
+          <div style="font-family:'Oswald',sans-serif;font-weight:700;font-size:22px;color:#15170F;flex-shrink:0">{{ step.num }}</div>
+          <div style="display:flex;flex-direction:column;gap:4px">
+            <div style="font-family:'Oswald',sans-serif;font-weight:700;font-size:15px;color:#15170F;text-transform:uppercase">{{ step.title }}</div>
+            <div style="font-family:'Oswald',sans-serif;font-weight:500;font-size:12.5px;line-height:18px;color:rgba(21,23,15,0.75)">{{ step.desc }}</div>
+          </div>
+        </div>
+      </sc-for>
+    </div>
+    <div style="flex:1"></div>
+    <button onClick="{{ go_import3 }}" style="width:100%;min-height:48px;border-radius:999px;border:2px solid #15170F;background:#15170F;color:#F3EFE2;font-family:'Oswald',sans-serif;font-weight:700;font-size:15px;letter-spacing:-0.01em;text-transform:uppercase;cursor:pointer">I've got my zip — next</button>
+    <button onClick="{{ go_home }}" style="background:none;border:none;color:#15170F;font-family:'Oswald',sans-serif;font-size:12.5px;text-decoration:underline;cursor:pointer;align-self:center">I'll do this later</button>
+  </div>
+</div>
+</sc-if>
+
+<sc-if value="{{ isImport3 }}" hint-placeholder-val="{{ false }}">
+<div style="width:390px;height:844px;box-sizing:border-box;overflow:hidden;position:relative;background:#F3EFE2">
+  <div style="height:100%;display:flex;flex-direction:column;padding:54px 20px 40px;box-sizing:border-box;gap:18px">
+    <div style="display:flex;gap:8px">
+      <div style="width:22px;height:8px;border-radius:999px;background:#E85C3F"></div>
+      <div style="width:22px;height:8px;border-radius:999px;background:#E85C3F"></div>
+      <div style="width:22px;height:8px;border-radius:999px;background:#E85C3F"></div>
+    </div>
+    <div style="font-family:'Oswald',sans-serif;font-weight:700;font-size:30px;line-height:32px;letter-spacing:-0.01em;color:#15170F;text-transform:uppercase">DROP THE ZIP<br>HERE.</div>
+    <div style="flex:1;display:flex;flex-direction:column;justify-content:center;gap:18px">
+      <div onClick="{{ pickFile }}" style="min-height:220px;border-radius:32px;border:2px dashed #15170F;background:#F3EFE2;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px;cursor:pointer;box-sizing:border-box;padding:20px">
+        <svg viewBox="0 0 260 280" width="42" height="45"><path d="M 60 50 L 190 112 L 155 129 C 172 155, 172 198, 142 220 C 122 234, 100 223, 94 200 C 90 175, 102 158, 110 151 L 60 175 Z" fill="#15170F" stroke="#15170F" stroke-width="9" stroke-linejoin="round" stroke-linecap="round"></path><circle cx="212" cy="232" r="17" fill="#15170F" stroke="#15170F" stroke-width="9"></circle></svg>
+        <div style="font-family:'Oswald',sans-serif;font-weight:700;font-size:15px;color:#15170F;text-align:center;text-transform:uppercase">{{ dropzoneLabel }}</div>
+        <div style="font-family:'Oswald',sans-serif;font-weight:500;font-size:12.5px;color:rgba(21,23,15,0.65)">{{ dropzoneSub }}</div>
+      </div>
+      <div style="display:flex;flex-direction:column;align-items:center;gap:8px;text-align:center">
+        <div style="width:16px;height:16px;border-radius:999px;border:1.5px solid rgba(21,23,15,0.6);flex-shrink:0;display:flex;align-items:center;justify-content:center;font-family:'Oswald',sans-serif;font-size:10px;color:rgba(21,23,15,0.6)">i</div>
+        <div style="font-family:'Oswald',sans-serif;font-size:10.5px;line-height:14px;letter-spacing:0.05em;color:rgba(21,23,15,0.6)">WE READ YOUR FILE ON OUR SERVERS, THEN DELETE IT. YOUR ORIGINAL MEDIA NEVER LEAVES INSTAGRAM.</div>
+      </div>
+    </div>
+    <button onClick="{{ importNow }}" style="width:100%;min-height:48px;border-radius:999px;border:2px solid #15170F;background:{{ importBtnBg }};color:{{ importBtnText }};font-family:'Oswald',sans-serif;font-weight:700;font-size:15px;letter-spacing:-0.01em;text-transform:uppercase;cursor:pointer">{{ importLabel }}</button>
+    <button onClick="{{ go_home }}" style="background:none;border:none;color:#15170F;font-family:'Oswald',sans-serif;font-size:10.5px;text-decoration:underline;cursor:pointer;align-self:center">Skip forever</button>
+  </div>
+</div>
+</sc-if>
+
+<sc-if value="{{ isLogin }}" hint-placeholder-val="{{ false }}">
+<div style="width:390px;height:844px;box-sizing:border-box;overflow:hidden;position:relative;background:#F3EFE2">
+  <div style="position:absolute;top:74px;left:30px;width:16px;height:16px;border-radius:999px;background:#E85C3F;opacity:0.35"></div>
+  <div style="position:absolute;top:150px;right:34px;width:10px;height:10px;border-radius:999px;background:#6A67E0;opacity:0.3"></div>
+  <div style="position:absolute;bottom:120px;left:26px;width:12px;height:12px;border-radius:999px;background:#E8AC3D;opacity:0.4"></div>
+  <div style="height:100%;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:44px 30px;box-sizing:border-box;overflow-y:auto;gap:14px">
+    <div style="transform:rotate(-4deg);background:#E85C3F;border:2px solid #15170F;border-radius:999px;padding:5px 14px;box-shadow:2px 2px 0 #15170F;font-family:'Oswald',sans-serif;font-weight:700;font-size:10px;letter-spacing:0.03em;color:#FFFFFF;margin-bottom:4px">HEY AGAIN ✦</div>
+    <img src="./logo-mark-transparent.png" alt="Spillthereel" style="width:66px;height:66px;object-fit:contain;display:block">
+    <div style="font-family:'Oswald',sans-serif;font-weight:700;font-size:32px;line-height:1.05;color:#15170F;text-transform:uppercase;text-align:center">WELCOME BACK.</div>
+    <div style="font-family:'Oswald',sans-serif;font-weight:500;font-size:14px;color:rgba(21,23,15,0.65);text-align:center">Sign in to your library.</div>
+    <div style="width:100%;display:flex;flex-direction:column;gap:10px;margin-top:8px">
+      <button onClick="{{ go_home }}" style="width:100%;min-height:48px;border-radius:999px;border:1.5px solid #15170F;background:#F3EFE2;color:#15170F;font-family:'Oswald',sans-serif;font-weight:700;font-size:14px;text-transform:uppercase;cursor:pointer">Continue with Google</button>
+      <button onClick="{{ go_home }}" style="width:100%;min-height:48px;border-radius:999px;border:1.5px solid #15170F;background:#F3EFE2;color:#15170F;font-family:'Oswald',sans-serif;font-weight:700;font-size:14px;text-transform:uppercase;cursor:pointer">Continue with Apple</button>
+      <div style="display:flex;align-items:center;gap:10px;width:100%;margin:4px 0">
+        <div style="flex:1;height:1.5px;background:#15170F;opacity:0.2"></div>
+        <div style="font-family:'Oswald',sans-serif;font-size:10.5px;color:rgba(21,23,15,0.5)">OR</div>
+        <div style="flex:1;height:1.5px;background:#15170F;opacity:0.2"></div>
+      </div>
+      <input value="{{ loginEmail }}" onChange="{{ onLoginEmailChange }}" placeholder="you@email.com" style="width:100%;min-height:48px;border-radius:999px;border:1.5px solid #15170F;background:#FFFFFF;box-sizing:border-box;padding:0 18px;font-family:'Oswald',sans-serif;font-size:14px;color:#15170F">
+      <input value="{{ loginPassword }}" onChange="{{ onLoginPasswordChange }}" placeholder="password" type="password" style="width:100%;min-height:48px;border-radius:999px;border:1.5px solid #15170F;background:#FFFFFF;box-sizing:border-box;padding:0 18px;font-family:'Oswald',sans-serif;font-size:14px;color:#15170F">
+      <div style="width:100%;text-align:right;font-family:'Oswald',sans-serif;font-size:12px;color:#15170F;text-decoration:underline;cursor:pointer">Forgot password?</div>
+      <button onClick="{{ go_home }}" style="width:100%;min-height:50px;border-radius:999px;border:2px solid #15170F;background:#E85C3F;box-shadow:3px 3px 0 #15170F;color:#FFFFFF;font-family:'Oswald',sans-serif;font-weight:700;font-size:15px;text-transform:uppercase;cursor:pointer;margin-top:4px" style-active="transform:translate(2px,2px);box-shadow:1px 1px 0 #15170F">Log in</button>
+    </div>
+    <div style="font-family:'Oswald',sans-serif;font-size:11px;color:rgba(21,23,15,0.6);text-align:center;margin-top:6px">NEW HERE? <span onClick="{{ go_signup }}" style="text-decoration:underline;cursor:pointer;font-weight:600;color:#15170F">CREATE AN ACCOUNT.</span></div>
+  </div>
+</div>
+</sc-if>
+
+<sc-if value="{{ isSignup }}" hint-placeholder-val="{{ false }}">
+<div style="width:390px;height:844px;box-sizing:border-box;overflow:hidden;position:relative;background:#F3EFE2">
+  <div style="position:absolute;top:80px;right:28px;width:14px;height:14px;border-radius:999px;background:#6A67E0;opacity:0.35"></div>
+  <div style="position:absolute;top:170px;left:30px;width:10px;height:10px;border-radius:999px;background:#E8AC3D;opacity:0.35"></div>
+  <div style="position:absolute;bottom:100px;right:34px;width:12px;height:12px;border-radius:999px;background:#E85C3F;opacity:0.3"></div>
+  <div style="height:100%;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:40px 30px 24px;box-sizing:border-box;overflow-y:auto;gap:12px">
+    <div style="transform:rotate(4deg);background:#E8AC3D;border:2px solid #15170F;border-radius:999px;padding:5px 14px;box-shadow:2px 2px 0 #15170F;font-family:'Oswald',sans-serif;font-weight:700;font-size:10px;letter-spacing:0.03em;color:#15170F;white-space:nowrap;margin-bottom:2px">20 SEC ✦ FREE</div>
+    <img src="./logo-mark-transparent.png" alt="Spillthereel" style="width:60px;height:60px;object-fit:contain;display:block">
+    <div style="font-family:'Oswald',sans-serif;font-weight:700;font-size:28px;line-height:1.05;color:#15170F;text-transform:uppercase;text-align:center">Find stuff easily</div>
+    <div style="font-family:'Oswald',sans-serif;font-weight:500;font-size:13px;color:rgba(21,23,15,0.65);text-align:center">Takes 20 seconds. No credit card.</div>
+    <div style="width:100%;display:flex;flex-direction:column;gap:9px;margin-top:6px">
+      <button onClick="{{ go_import1 }}" style="width:100%;min-height:46px;border-radius:999px;border:1.5px solid #15170F;background:#F3EFE2;color:#15170F;font-family:'Oswald',sans-serif;font-weight:700;font-size:13.5px;text-transform:uppercase;cursor:pointer">Continue with Google</button>
+      <button onClick="{{ go_import1 }}" style="width:100%;min-height:46px;border-radius:999px;border:1.5px solid #15170F;background:#F3EFE2;color:#15170F;font-family:'Oswald',sans-serif;font-weight:700;font-size:13.5px;text-transform:uppercase;cursor:pointer">Continue with Apple</button>
+      <div style="display:flex;align-items:center;gap:10px;width:100%;margin:4px 0">
+        <div style="flex:1;height:1.5px;background:#15170F;opacity:0.2"></div>
+        <div style="font-family:'Oswald',sans-serif;font-size:10.5px;color:rgba(21,23,15,0.5)">OR</div>
+        <div style="flex:1;height:1.5px;background:#15170F;opacity:0.2"></div>
+      </div>
+      <input value="{{ signupName }}" onChange="{{ onSignupNameChange }}" placeholder="Your name" style="width:100%;min-height:46px;border-radius:999px;border:1.5px solid #15170F;background:#FFFFFF;box-sizing:border-box;padding:0 18px;font-family:'Oswald',sans-serif;font-size:14px;color:#15170F">
+      <input value="{{ signupEmail }}" onChange="{{ onSignupEmailChange }}" placeholder="you@email.com" style="width:100%;min-height:46px;border-radius:999px;border:1.5px solid #15170F;background:#FFFFFF;box-sizing:border-box;padding:0 18px;font-family:'Oswald',sans-serif;font-size:14px;color:#15170F">
+      <input value="{{ signupPassword }}" onChange="{{ onSignupPasswordChange }}" placeholder="8+ characters" type="password" style="width:100%;min-height:46px;border-radius:999px;border:1.5px solid #15170F;background:#FFFFFF;box-sizing:border-box;padding:0 18px;font-family:'Oswald',sans-serif;font-size:14px;color:#15170F">
+      <button onClick="{{ go_import1 }}" style="width:100%;min-height:50px;border-radius:999px;border:2px solid #15170F;background:#E85C3F;box-shadow:3px 3px 0 #15170F;color:#FFFFFF;font-family:'Oswald',sans-serif;font-weight:700;font-size:15px;text-transform:uppercase;cursor:pointer;margin-top:4px" style-active="transform:translate(2px,2px);box-shadow:1px 1px 0 #15170F">Create account</button>
+    </div>
+    <div style="font-family:'Oswald',sans-serif;font-size:11px;color:rgba(21,23,15,0.6);text-align:center;margin-top:4px">ALREADY HAVE AN ACCOUNT? <span onClick="{{ go_login }}" style="text-decoration:underline;cursor:pointer;font-weight:600;color:#15170F">LOG IN.</span></div>
+  </div>
+</div>
+</sc-if>
+
+<sc-if value="{{ isHome }}" hint-placeholder-val="{{ false }}">
+<div style="width:390px;height:844px;box-sizing:border-box;overflow:hidden;position:relative;background:#F3EFE2">
+  <div style="height:100%;overflow-y:auto;padding:54px 20px 130px;box-sizing:border-box;display:flex;flex-direction:column;gap:16px">
+      <div style="display:flex;align-items:center;justify-content:space-between">
+        <div style="font-family:'Oswald',sans-serif;font-weight:700;font-size:30px;letter-spacing:-0.02em;color:#15170F;text-transform:uppercase">HEY,<br>ADITYA.</div>
+        <div onClick="{{ go_profile }}" style="width:44px;height:44px;border-radius:999px;background:#15170F;color:#F3EFE2;border:2.5px solid #15170F;box-shadow:3px 3px 0 #E85C3F;cursor:pointer;flex-shrink:0;font-family:'Oswald',sans-serif;font-weight:700;font-size:17px;display:flex;align-items:center;justify-content:center">A</div>
+      </div>
+      <div onClick="{{ go_chat }}" style="display:flex;align-items:center;gap:10px;background:#15170F;border:2.5px solid #15170F;border-radius:999px;padding:0 8px 0 18px;min-height:52px;cursor:pointer;box-sizing:border-box">
+        <div style="flex:1;font-family:'Oswald',sans-serif;font-weight:600;font-size:14px;color:rgba(243,239,226,0.65)">lets spill the reel....</div>
+        <div style="width:36px;height:36px;border-radius:999px;background:#E85C3F;display:flex;align-items:center;justify-content:center;flex-shrink:0">
+          <svg width="15" height="15" viewBox="0 0 16 16"><circle cx="7" cy="7" r="5" fill="none" stroke="#FFFFFF" stroke-width="2.2"></circle><line x1="11" y1="11" x2="15" y2="15" stroke="#FFFFFF" stroke-width="2.2" stroke-linecap="round"></line></svg>
+        </div>
+      </div>
+      <div style="display:flex;gap:10px">
+        <div style="flex:1;background:#E85C3F;border:2.5px solid #15170F;box-shadow:5px 5px 0 #15170F;border-radius:22px;padding:16px;height:104px;box-sizing:border-box;display:flex;flex-direction:column;justify-content:space-between">
+          <div style="align-self:flex-end;transform:rotate(-4deg);font-family:'Oswald',sans-serif;font-weight:700;font-size:10px;color:#E85C3F;background:#F3EFE2;border:1.5px solid #15170F;border-radius:999px;padding:3px 8px">+18</div>
+          <div><div style="font-family:'Oswald',sans-serif;font-weight:700;font-size:38px;line-height:1;color:#FFFFFF">342</div>
+          <div style="font-family:'Oswald',sans-serif;font-size:10.5px;letter-spacing:0.06em;color:rgba(255,255,255,0.9);margin-top:4px">REELS SAVED</div></div>
+        </div>
+        <div style="flex:1;background:#E8AC3D;border:2.5px solid #15170F;box-shadow:5px 5px 0 #15170F;border-radius:22px;padding:16px;height:104px;box-sizing:border-box;display:flex;flex-direction:column;justify-content:space-between">
+          <div style="align-self:flex-end;font-family:'Oswald',sans-serif;font-size:10px;color:rgba(21,23,15,0.6);background:rgba(21,23,15,0.12);border-radius:999px;padding:3px 8px">wk</div>
+          <div><div style="font-family:'Oswald',sans-serif;font-weight:700;font-size:38px;line-height:1;color:#15170F">6</div>
+          <div style="font-family:'Oswald',sans-serif;font-size:10.5px;letter-spacing:0.06em;color:rgba(21,23,15,0.75);margin-top:4px">SAVED THIS WK</div></div>
+        </div>
+      </div>
+      <div style="background:#6A67E0;border:2.5px solid #15170F;box-shadow:5px 5px 0 #15170F;border-radius:26px;padding:18px;box-sizing:border-box">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
+          <div style="font-family:'Oswald',sans-serif;font-weight:700;font-size:17px;letter-spacing:-0.01em;color:#FFFFFF">RECALL ACTIVITY</div>
+          <div style="font-family:'Oswald',sans-serif;font-weight:700;font-size:11px;color:#15170F;background:#F3EFE2;border-radius:999px;padding:5px 12px">THIS WEEK ⌄</div>
+        </div>
+        <div style="display:flex;gap:7px;align-items:flex-end;height:60px">
+          <sc-for list="{{ chartBars }}" as="bar" hint-placeholder-count="7">
+            <div style="flex:1;border-radius:5px 5px 0 0;background:{{ bar.color }};height:{{ bar.h }}"></div>
+          </sc-for>
+        </div>
+      </div>
+      <div style="display:flex;justify-content:space-between;align-items:baseline">
+        <div style="font-family:'Oswald',sans-serif;font-weight:700;font-size:18px;letter-spacing:-0.01em;color:#15170F">RECENTLY SAVED</div>
+        <div style="font-family:'Oswald',sans-serif;font-weight:700;font-size:12px;color:#15170F;text-decoration:underline">See all</div>
+      </div>
+      <div style="display:flex;gap:10px;overflow-x:auto">
+        <sc-for list="{{ recentThumbs }}" as="thumb" hint-placeholder-count="4">
+          <div style="width:72px;height:96px;flex-shrink:0;border-radius:18px;background:{{ thumb.bg }};border:2px solid #15170F;position:relative">
+            <div style="position:absolute;bottom:8px;left:8px;width:22px;height:22px;border-radius:999px;background:rgba(21,23,15,0.6);color:#fff;font-size:9px;display:flex;align-items:center;justify-content:center">▶</div>
+          </div>
+        </sc-for>
+      </div>
+      <div style="display:flex;justify-content:space-between;align-items:baseline">
+        <div style="font-family:'Oswald',sans-serif;font-weight:700;font-size:18px;letter-spacing:-0.01em;color:#15170F">YOUR COLLECTIONS</div>
+        <div style="font-family:'Oswald',sans-serif;font-size:10.5px;background:#15170F;color:#F3EFE2;border-radius:999px;padding:3px 9px">3</div>
+      </div>
+      <sc-for list="{{ collectionRails }}" as="rail" hint-placeholder-count="2">
+        <div style="display:flex;align-items:center;justify-content:space-between;background:{{ rail.bg }};border:2.5px solid #15170F;box-shadow:4px 4px 0 #15170F;border-radius:24px;padding:16px 18px;box-sizing:border-box;position:relative">
+          <sc-if value="{{ rail.badge }}" hint-placeholder-val="{{ false }}">
+            <div style="position:absolute;top:-10px;right:16px;transform:rotate(5deg);background:#6A67E0;border:2px solid #15170F;border-radius:999px;padding:3px 10px;font-family:'Oswald',sans-serif;font-weight:700;font-size:9px;color:#FFFFFF">{{ rail.badge }}</div>
+          </sc-if>
+          <div>
+            <div style="font-family:'Oswald',sans-serif;font-weight:700;font-size:24px;letter-spacing:-0.02em;color:{{ rail.text }};text-transform:uppercase">{{ rail.name }}</div>
+            <div style="font-family:'Oswald',sans-serif;font-size:10.5px;color:{{ rail.subText }};margin-top:2px">{{ rail.count }}</div>
+          </div>
+          <div style="width:36px;height:36px;border-radius:999px;background:#15170F;color:#F3EFE2;display:flex;align-items:center;justify-content:center;font-size:15px;flex-shrink:0">↗</div>
+        </div>
+      </sc-for>
+  </div>
+  <sc-if value="{{ showTabBar }}" hint-placeholder-val="{{ true }}">
+    <div style="position:absolute;left:20px;right:20px;bottom:26px;height:66px;border-radius:999px;background:rgba(255,255,255,0.5);backdrop-filter:blur(18px) saturate(160%);-webkit-backdrop-filter:blur(18px) saturate(160%);border:1.5px solid rgba(255,255,255,0.7);box-shadow:0 10px 30px rgba(21,23,15,0.18);display:flex;justify-content:space-around;align-items:center;z-index:30">
+      <sc-for list="{{ tabItems }}" as="tab" hint-placeholder-count="5">
+        <div onClick="{{ tab.onClick }}" style="width:46px;height:46px;border-radius:999px;display:flex;align-items:center;justify-content:center;background:{{ tab.bg }};cursor:pointer;transition:all 0.3s cubic-bezier(0.34,1.56,0.64,1)">
+          <span style="font-size:20px;color:{{ tab.color }}">{{ tab.icon }}</span>
+        </div>
+      </sc-for>
+    </div>
+  </sc-if>
+</div>
+</sc-if>
+
+<sc-if value="{{ isCategories }}" hint-placeholder-val="{{ false }}">
+<div style="width:390px;height:844px;box-sizing:border-box;overflow:hidden;position:relative;background:#F3EFE2">
+  <div style="height:100%;padding:54px 18px 0;box-sizing:border-box;display:flex;flex-direction:column;gap:14px">
+      <div style="font-family:'Oswald',sans-serif;font-weight:700;font-size:40px;letter-spacing:-0.02em;color:#15170F;text-transform:uppercase">CATEGORIES</div>
+      <div style="position:relative;height:64px;min-height:64px;flex-shrink:0;margin-top:6px">
+        <div onClick="{{ toggleAllSources }}" style="position:absolute;top:6px;left:0;transform:rotate({{ sourceBarBackRotate }});background:#E85C3F;border:2px solid #15170F;color:#FFFFFF;border-radius:999px;padding:9px 20px;font-family:'Oswald',sans-serif;font-weight:700;font-size:12px;letter-spacing:-0.01em;cursor:pointer;white-space:nowrap">{{ sourceBarBackLabel }}</div>
+        <div onClick="{{ toggleAllSources }}" style="position:absolute;top:0;left:14px;transform:rotate({{ sourceBarFrontRotate }});background:#15170F;border:2px solid #15170F;color:#F3EFE2;border-radius:999px;padding:9px 20px;font-family:'Oswald',sans-serif;font-weight:700;font-size:12px;letter-spacing:-0.01em;cursor:pointer;white-space:nowrap">{{ sourceBarFrontLabel }}</div>
+      </div>
+      <div style="font-family:'Oswald',sans-serif;font-size:10.5px;letter-spacing:0.08em;color:rgba(21,23,15,0.55);margin-top:2px">112 REELS · 8 CATEGORIES · SCROLL THE DIAL</div>
+      <div ref="{{ categoriesScrollRef }}" style="flex:1;min-height:0;position:relative;overflow-y:scroll;overscroll-behavior:contain;scrollbar-width:none;margin:0 -18px">
+        <div style="position:sticky;top:0;left:0;width:390px;height:520px;overflow:hidden;z-index:2;mask-image:linear-gradient(to bottom, transparent 0, black 70px, black calc(100% - 70px), transparent 100%);-webkit-mask-image:linear-gradient(to bottom, transparent 0, black 70px, black calc(100% - 70px), transparent 100%)">
+          <div style="position:absolute;inset:0">
+            <sc-for list="{{ dialSlots }}" as="slot" hint-placeholder-count="30">
+              <div onClick="{{ slot.onClick }}" data-dial-slot="true" style="position:absolute;left:36px;top:50%;width:318px;margin-top:-52px;height:104px;box-sizing:border-box;background:{{ slot.bg }};border:2.5px solid #15170F;box-shadow:5px 5px 0 #15170F;border-radius:24px;padding:14px 16px;display:flex;align-items:center;gap:14px;cursor:pointer;will-change:transform;visibility:hidden;transform-origin:0% 50%">
+                <div style="flex:1;min-width:0;display:flex;flex-direction:column;gap:7px">
+                  <div style="font-family:'Oswald',sans-serif;font-weight:700;font-size:24px;line-height:1.05;letter-spacing:-0.02em;color:{{ slot.text }};text-transform:uppercase">{{ slot.name }}</div>
+                  <div style="font-family:'Oswald',sans-serif;font-size:10px;letter-spacing:0.06em;color:{{ slot.subText }}">{{ slot.count }} REELS · AUTO-SORTED</div>
+                </div>
+                <sc-if value="{{ slot.icon }}" hint-placeholder-val="{{ false }}">
+                  <img src="{{ slot.icon }}" alt="{{ slot.name }}" style="width:70px;height:70px;object-fit:contain;flex-shrink:0">
+                </sc-if>
+              </div>
+            </sc-for>
+          </div>
+        </div>
+        <div style="height:24000px;margin-top:-520px;pointer-events:none"></div>
+      </div>
+  </div>
+  <sc-if value="{{ showTabBar }}" hint-placeholder-val="{{ true }}">
+    <div style="position:absolute;left:20px;right:20px;bottom:26px;height:66px;border-radius:999px;background:rgba(255,255,255,0.5);backdrop-filter:blur(18px) saturate(160%);-webkit-backdrop-filter:blur(18px) saturate(160%);border:1.5px solid rgba(255,255,255,0.7);box-shadow:0 10px 30px rgba(21,23,15,0.18);display:flex;justify-content:space-around;align-items:center;z-index:30">
+      <sc-for list="{{ tabItems }}" as="tab" hint-placeholder-count="5">
+        <div onClick="{{ tab.onClick }}" style="width:46px;height:46px;border-radius:999px;display:flex;align-items:center;justify-content:center;background:{{ tab.bg }};cursor:pointer;transition:all 0.3s cubic-bezier(0.34,1.56,0.64,1)">
+          <span style="font-size:20px;color:{{ tab.color }}">{{ tab.icon }}</span>
+        </div>
+      </sc-for>
+    </div>
+  </sc-if>
+</div>
+</sc-if>
+
+<sc-if value="{{ isChat }}" hint-placeholder-val="{{ false }}">
+<div style="width:390px;height:844px;box-sizing:border-box;overflow:hidden;position:relative;background:#0F110C">
+  <div style="height:100%;display:flex;flex-direction:column">
+    <div style="flex-shrink:0;display:flex;align-items:center;gap:10px;padding:54px 18px 12px;box-sizing:border-box">
+      <div onClick="{{ go_home }}" style="width:38px;height:38px;border-radius:999px;background:rgba(243,239,226,0.1);border:1.5px solid rgba(243,239,226,0.25);color:#F3EFE2;display:flex;align-items:center;justify-content:center;font-size:17px;cursor:pointer;flex-shrink:0">←</div>
+      <div style="flex: 1; font-family: 'MyLove', cursive; font-weight: 700; font-size: 28px; color: #F3EFE2; text-align: center">Spillthereel</div>
+      <div style="width:38px"></div>
+    </div>
+    <div style="flex:1;overflow-y:auto;padding:16px 18px 110px;box-sizing:border-box;display:flex;flex-direction:column;gap:18px">
+      <sc-for list="{{ chatMessages }}" as="msg" hint-placeholder-count="3">
+        <sc-if value="{{ msg.isUser }}" hint-placeholder-val="{{ false }}">
+          <div style="max-width:78%;align-self:flex-end;background:rgba(243,239,226,0.1);color:#F3EFE2;border-radius:20px;padding:12px 16px;font-family:'Oswald',sans-serif;font-weight:500;font-size:14px;line-height:20px">{{ msg.text }}</div>
+        </sc-if>
+        <sc-if value="{{ msg.isBot }}" hint-placeholder-val="{{ false }}">
+          <div style="display:flex;gap:10px;align-items:flex-start;max-width:92%">
+            <div style="width:26px;height:26px;border-radius:999px;border:1.5px solid rgba(243,239,226,0.4);display:flex;align-items:center;justify-content:center;flex-shrink:0;margin-top:2px;font-size:9px;color:#F3EFE2">▶</div>
+            <div style="display:flex;flex-direction:column;gap:12px">
+              <div style="font-family:'Oswald',sans-serif;font-weight:500;font-size:14.5px;line-height:21px;color:#F3EFE2">{{ msg.text }}</div>
+              <sc-if value="{{ msg.card }}" hint-placeholder-val="{{ false }}">
+                <div style="background:#1B1D15;border:1.5px solid rgba(243,239,226,0.15);border-radius:20px;overflow:hidden;width:210px">
+                  <div style="height:220px;background:{{ msg.card.thumbBg }} url({{ msg.card.image }}) center/cover no-repeat;display:flex;align-items:center;justify-content:center"></div>
+                  <div style="padding:14px;display:flex;flex-direction:column;gap:8px">
+                    <div style="font-family:'Oswald',sans-serif;font-weight:700;font-size:13px;color:#F3EFE2">{{ msg.card.creator }}</div>
+                    <div style="font-family:'Oswald',sans-serif;font-weight:400;font-size:11.5px;line-height:16px;color:rgba(243,239,226,0.55)">{{ msg.card.desc }}</div>
+                    <div style="display:flex;align-items:center;justify-content:center;gap:6px;background:#F3EFE2;color:#15170F;border-radius:999px;padding:9px;margin-top:4px;font-family:'Oswald',sans-serif;font-weight:700;font-size:11.5px;cursor:pointer">↗ WATCH ON INSTAGRAM</div>
+                  </div>
+                </div>
+              </sc-if>
+            </div>
+          </div>
+        </sc-if>
+      </sc-for>
+      <sc-if value="{{ chatTyping }}" hint-placeholder-val="{{ false }}">
+        <div style="display:flex;gap:10px;align-items:center">
+          <div style="width:26px;height:26px;border-radius:999px;border:1.5px solid rgba(243,239,226,0.4);display:flex;align-items:center;justify-content:center;flex-shrink:0;font-size:9px;color:#F3EFE2">▶</div>
+          <div style="font-family:'Oswald',sans-serif;color:rgba(243,239,226,0.5);font-size:14px">···</div>
+        </div>
+      </sc-if>
+      <div style="display:flex;gap:8px;overflow-x:auto;margin-top:4px">
+        <sc-for list="{{ suggestionChips }}" as="chip" hint-placeholder-count="3">
+          <div onClick="{{ chip.onClick }}" style="background:rgba(243,239,226,0.1);border:1px solid rgba(243,239,226,0.25);color:#F3EFE2;border-radius:999px;padding:8px 14px;font-family:'Oswald',sans-serif;font-weight:700;font-size:11px;white-space:nowrap;cursor:pointer">{{ chip.label }}</div>
+        </sc-for>
+      </div>
+    </div>
+  </div>
+  <div style="position:absolute;left:20px;right:20px;bottom:26px;display:flex;align-items:center;gap:10px;z-index:30">
+    <div style="width:46px;height:46px;border-radius:999px;background:rgba(243,239,226,0.12);backdrop-filter:blur(14px);-webkit-backdrop-filter:blur(14px);border:1.5px solid rgba(243,239,226,0.25);color:#F3EFE2;display:flex;align-items:center;justify-content:center;font-size:20px;flex-shrink:0;cursor:pointer">+</div>
+    <div style="flex:1;display:flex;align-items:center;gap:10px;background:rgba(243,239,226,0.12);backdrop-filter:blur(14px);-webkit-backdrop-filter:blur(14px);border:1.5px solid rgba(243,239,226,0.25);border-radius:999px;padding:11px 8px 11px 18px">
+      <input class="chat-input" value="{{ chatInput }}" onChange="{{ setChatInput }}" onKeyDown="{{ chatKeyDown }}" placeholder="Ask something to start" style="flex: 1; background: none; border: none; outline: none; font-family: 'Oswald',sans-serif; font-weight: 500; font-size: 14px; color: #F2EEE1">
+      <div onClick="{{ sendChat }}" style="width:30px;height:30px;border-radius:999px;background:#E85C3F;color:#FFFFFF;display:flex;align-items:center;justify-content:center;font-size:14px;cursor:pointer;flex-shrink:0">→</div>
+    </div>
+  </div>
+
+</div>
+</sc-if>
+
+<sc-if value="{{ isProfile }}" hint-placeholder-val="{{ false }}">
+<div style="width:390px;height:844px;box-sizing:border-box;overflow:hidden;position:relative;background:#F3EFE2">
+  <div style="height:100%;overflow-y:auto;padding:54px 20px 130px;box-sizing:border-box;display:flex;flex-direction:column;gap:18px">
+      <div style="display:flex;align-items:center;justify-content:space-between">
+        <div onClick="{{ go_home }}" style="width:38px;height:38px;border-radius:999px;background:#15170F;color:#F3EFE2;display:flex;align-items:center;justify-content:center;font-size:18px;cursor:pointer">←</div>
+        <div style="font-family:'Oswald',sans-serif;font-weight:700;font-size:16px;letter-spacing:0.02em;color:#15170F">PROFILE</div>
+        <div style="width:38px"></div>
+      </div>
+      <div style="display:flex;flex-direction:column;align-items:center;gap:6px;position:relative">
+        <div style="width:92px;height:92px;border-radius:999px;background:#6A67E0;border:3px solid #15170F;box-shadow:4px 4px 0 #E8AC3D"></div>
+        <div style="position:absolute;top:60px;left:calc(50% + 28px);transform:rotate(8deg);background:#E85C3F;border:2px solid #15170F;border-radius:999px;padding:3px 10px;font-family:'Oswald',sans-serif;font-weight:700;font-size:9.5px;color:#FFFFFF">PRO ✦</div>
+        <div style="font-family:'Oswald',sans-serif;font-weight:700;font-size:22px;color:#15170F;margin-top:6px">ADITYA JADHAV</div>
+        <div style="font-family:'Oswald',sans-serif;font-size:10.5px;color:rgba(21,23,15,0.6)">@can.adityaa · joined jun 2026</div>
+      </div>
+      <div style="display:flex;border:2.5px solid #15170F;box-shadow:4px 4px 0 #15170F;border-radius:20px;padding:16px 0;background:#FFFFFF">
+        <div style="flex:1;text-align:center">
+          <div style="font-family:'Oswald',sans-serif;font-weight:700;font-size:22px;color:#15170F">342</div>
+          <div style="font-family:'Oswald',sans-serif;font-size:10.5px;color:rgba(21,23,15,0.6)">REELS</div>
+        </div>
+        <div style="width:2px;background:rgba(21,23,15,0.2)"></div>
+        <div style="flex:1;text-align:center">
+          <div style="font-family:'Oswald',sans-serif;font-weight:700;font-size:22px;color:#15170F">6</div>
+          <div style="font-family:'Oswald',sans-serif;font-size:10.5px;color:rgba(21,23,15,0.6)">CATEGORIES</div>
+        </div>
+        <div style="width:2px;background:rgba(21,23,15,0.2)"></div>
+        <div style="flex:1;text-align:center">
+          <div style="font-family:'Oswald',sans-serif;font-weight:700;font-size:22px;color:#E85C3F">18</div>
+          <div style="font-family:'Oswald',sans-serif;font-size:10.5px;color:rgba(21,23,15,0.6)">DAY STREAK</div>
+        </div>
+      </div>
+      <div style="font-family:'Oswald',sans-serif;font-size:10.5px;letter-spacing:0.08em;color:rgba(21,23,15,0.55)">CONNECTED SOURCES</div>
+      <div style="display:flex;flex-direction:column;gap:8px">
+        <sc-for list="{{ connectedSources }}" as="src" hint-placeholder-count="4">
+          <div style="display:flex;align-items:center;justify-content:space-between;background:{{ src.bg }};border:2px solid #15170F;border-radius:14px;padding:14px 16px;box-sizing:border-box">
+            <div style="font-family:'Oswald',sans-serif;font-weight:700;font-size:15px;color:#15170F">{{ src.name }}</div>
+            <div style="font-family:'Oswald',sans-serif;font-size:10.5px;color:rgba(21,23,15,0.75)">{{ src.status }}</div>
+          </div>
+        </sc-for>
+      </div>
+      <button onClick="{{ go_import2 }}" style="background:none;border:none;color:#15170F;font-family:'Oswald',sans-serif;font-size:12.5px;text-decoration:underline;cursor:pointer;align-self:center">Import more from Instagram</button>
+  </div>
+  <sc-if value="{{ showTabBar }}" hint-placeholder-val="{{ true }}">
+    <div style="position:absolute;left:20px;right:20px;bottom:26px;height:66px;border-radius:999px;background:rgba(255,255,255,0.5);backdrop-filter:blur(18px) saturate(160%);-webkit-backdrop-filter:blur(18px) saturate(160%);border:1.5px solid rgba(255,255,255,0.7);box-shadow:0 10px 30px rgba(21,23,15,0.18);display:flex;justify-content:space-around;align-items:center;z-index:30">
+      <sc-for list="{{ tabItems }}" as="tab" hint-placeholder-count="5">
+        <div onClick="{{ tab.onClick }}" style="width:46px;height:46px;border-radius:999px;display:flex;align-items:center;justify-content:center;background:{{ tab.bg }};cursor:pointer;transition:all 0.3s cubic-bezier(0.34,1.56,0.64,1)">
+          <span style="font-size:20px;color:{{ tab.color }}">{{ tab.icon }}</span>
+        </div>
+      </sc-for>
+    </div>
+  </sc-if>
+</div>
+</sc-if>
+
+<sc-if value="{{ isSettings }}" hint-placeholder-val="{{ false }}">
+<div style="width:390px;height:844px;box-sizing:border-box;overflow:hidden;position:relative;background:#C7D3C3">
+  <div style="height:100%;overflow-y:auto;padding:54px 18px 130px;box-sizing:border-box;display:flex;flex-direction:column;gap:16px">
+      <div style="display:flex;justify-content:space-between;align-items:center">
+        <div style="font-family:'Oswald',sans-serif;font-weight:700;font-size:30px;color:#15170F">SETTINGS</div>
+        <div onClick="{{ go_profile }}" style="width:32px;height:32px;border-radius:999px;background:#6A67E0;border:2px solid #15170F;cursor:pointer"></div>
+      </div>
+      <sc-for list="{{ settingsGroups }}" as="group" hint-placeholder-count="4">
+        <div style="display:flex;flex-direction:column;gap:8px">
+          <div style="font-family:'Oswald',sans-serif;font-size:10.5px;letter-spacing:0.08em;color:rgba(21,23,15,0.55)">{{ group.eyebrow }}</div>
+          <div style="display:flex;flex-direction:column;gap:8px">
+            <sc-for list="{{ group.rows }}" as="row" hint-placeholder-count="3">
+              <div onClick="{{ row.onClick }}" style="display:flex;align-items:center;justify-content:space-between;background:#F3EFE2;border:2.5px solid #15170F;box-shadow:3px 3px 0 #15170F;border-radius:16px;padding:14px 16px;box-sizing:border-box;cursor:pointer">
+                <div style="flex:1">
+                  <div style="font-family:'Oswald',sans-serif;font-weight:700;font-size:15px;color:{{ row.labelColor }}">{{ row.label }}</div>
+                  <sc-if value="{{ row.sub }}" hint-placeholder-val="{{ false }}">
+                    <div style="font-family:'Oswald',sans-serif;font-weight:500;font-size:12.5px;color:rgba(21,23,15,0.6);margin-top:2px">{{ row.sub }}</div>
+                  </sc-if>
+                </div>
+                <sc-if value="{{ row.isChevron }}" hint-placeholder-val="{{ false }}">
+                  <div style="width:32px;height:32px;border-radius:999px;background:{{ row.chevronBg }};color:{{ row.chevronColor }};display:flex;align-items:center;justify-content:center;font-size:15px;flex-shrink:0">↗</div>
+                </sc-if>
+                <sc-if value="{{ row.isChip }}" hint-placeholder-val="{{ false }}">
+                  <div style="background:{{ row.chipBg }};color:{{ row.chipText }};border-radius:999px;padding:6px 13px;font-family:'Oswald',sans-serif;font-weight:700;font-size:10.5px">{{ row.chipLabel }}</div>
+                </sc-if>
+                <sc-if value="{{ row.isToggle }}" hint-placeholder-val="{{ false }}">
+                  <div style="width:44px;height:26px;border-radius:999px;background:{{ row.trackBg }};border:1.5px solid #15170F;position:relative;flex-shrink:0">
+                    <div style="width:20px;height:20px;border-radius:999px;background:linear-gradient(180deg,#FFFFFF,#F3EFE2);position:absolute;top:2px;left:{{ row.knobLeft }};box-shadow:0 1px 2px rgba(0,0,0,0.3)"></div>
+                  </div>
+                </sc-if>
+              </div>
+            </sc-for>
+          </div>
+        </div>
+      </sc-for>
+      <div style="text-align:center;font-family:'Oswald',sans-serif;font-size:9.5px;color:rgba(21,23,15,0.4);margin-top:8px">SPILLTHEREEL V1.0.0</div>
+  </div>
+  <sc-if value="{{ showTabBar }}" hint-placeholder-val="{{ true }}">
+    <div style="position:absolute;left:20px;right:20px;bottom:26px;height:66px;border-radius:999px;background:rgba(255,255,255,0.5);backdrop-filter:blur(18px) saturate(160%);-webkit-backdrop-filter:blur(18px) saturate(160%);border:1.5px solid rgba(255,255,255,0.7);box-shadow:0 10px 30px rgba(21,23,15,0.18);display:flex;justify-content:space-around;align-items:center;z-index:30">
+      <sc-for list="{{ tabItems }}" as="tab" hint-placeholder-count="5">
+        <div onClick="{{ tab.onClick }}" style="width:46px;height:46px;border-radius:999px;display:flex;align-items:center;justify-content:center;background:{{ tab.bg }};cursor:pointer;transition:all 0.3s cubic-bezier(0.34,1.56,0.64,1)">
+          <span style="font-size:20px;color:{{ tab.color }}">{{ tab.icon }}</span>
+        </div>
+      </sc-for>
+    </div>
+  </sc-if>
+  <sc-if value="{{ showDeleteConfirm }}" hint-placeholder-val="{{ false }}">
+    <div style="position:absolute;inset:0;background:rgba(21,23,15,0.55);display:flex;align-items:center;justify-content:center;padding:24px;box-sizing:border-box;z-index:40">
+      <div style="background:#F3EFE2;border:3px solid #15170F;box-shadow:6px 6px 0 #15170F;border-radius:22px;padding:24px;width:100%;display:flex;flex-direction:column;gap:14px">
+        <div style="font-family:'Oswald',sans-serif;font-weight:700;font-size:20px;color:#15170F;text-transform:uppercase">Delete account?</div>
+        <div style="font-family:'Oswald',sans-serif;font-weight:500;font-size:13px;color:rgba(21,23,15,0.75)">This removes every saved reel and cannot be undone.</div>
+        <button onClick="{{ confirmDelete }}" style="width:100%;min-height:46px;border-radius:999px;border:2px solid #15170F;background:#E85C3F;color:#FFFFFF;font-family:'Oswald',sans-serif;font-weight:700;font-size:14px;text-transform:uppercase;cursor:pointer">Delete my account</button>
+        <button onClick="{{ cancelDelete }}" style="width:100%;min-height:46px;border-radius:999px;border:2px solid #15170F;background:none;color:#15170F;font-family:'Oswald',sans-serif;font-weight:700;font-size:14px;text-transform:uppercase;cursor:pointer">Cancel</button>
+      </div>
+    </div>
+  </sc-if>
+  <sc-if value="{{ toast }}" hint-placeholder-val="{{ false }}">
+    <div style="position:absolute;left:50%;bottom:110px;transform:translateX(-50%);background:rgba(21,23,15,0.92);color:#F3EFE2;border:2px solid #F3EFE2;border-radius:999px;padding:10px 18px;font-family:'Oswald',sans-serif;font-size:12px;letter-spacing:0.08em;white-space:nowrap">{{ toast }}</div>
+  </sc-if>
+</div>
+</sc-if>
+
+</x-import>
+
+<div style="display:flex;flex-wrap:wrap;gap:6px;justify-content:center;max-width:390px;margin-top:4px">
+  <sc-for list="{{ allScreens }}" as="scr" hint-placeholder-count="11">
+    <div onClick="{{ scr.onClick }}" style="padding:5px 10px;border-radius:999px;font-family:'Oswald',sans-serif;font-size:11px;cursor:pointer;background:{{ scr.bg }};color:{{ scr.color }};border:1px solid rgba(21,23,15,0.2)">{{ scr.label }}</div>
+  </sc-for>
+</div>
+
+</div>
+
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;startScreen&quot;: {&quot;editor&quot;: &quot;enum&quot;, &quot;default&quot;: &quot;welcome&quot;, &quot;tsType&quot;: &quot;string&quot;, &quot;options&quot;: [&quot;welcome&quot;, &quot;import1&quot;, &quot;import2&quot;, &quot;import3&quot;, &quot;login&quot;, &quot;signup&quot;, &quot;home&quot;, &quot;categories&quot;, &quot;chat&quot;, &quot;profile&quot;, &quot;settings&quot;]}}">
+class Component extends DCLogic {
+  categoriesScrollRef = React.createRef();
+  state = {
+    screen: 'welcome',
+    expandedCategory: 'recipes',
+    allSourcesOpen: false,
+    toggles: { autoDelete: false, saveReady: true, weeklyDigest: false, failedSaves: true },
+    showDeleteConfirm: false,
+    toast: null,
+    chatMessages: [
+      { from: 'user', text: 'what were those cool ui libraries?' },
+      { from: 'bot', text: 'Found it — post by @can.adityaa. List of them are:\nfancycomponents.dev - text effects\nui.aceternity.com - templates\nmagicui.design - dark themed\nlightswind.com - huge collection\n21st.dev - for everything you need', card: { image: './chat-ui-libraries.png', thumbBg: '#15170F', creator: '@can.adityaa', desc: 'UI Library Edition — steal these assets.' } }
+    ],
+    chatInput: '',
+    chatTyping: false,
+    uploadPicked: false,
+    importing: false,
+    signupName: '', signupEmail: '', signupPassword: '',
+    loginEmail: '', loginPassword: '',
+  };
+
+  componentDidMount() {
+    if (this.props.startScreen) this.setState({ screen: this.props.startScreen });
+  }
+
+  DIAL = { slots: 30, pitch: 150, step: 12 * Math.PI / 180, radius: 900, base: 9000, cull: 32 };
+
+  componentDidUpdate() {
+    const el = this.categoriesScrollRef.current;
+    if (el && this._dialEl !== el) {
+      if (this._dialEl) this._dialEl.removeEventListener('scroll', this._onDialScroll);
+      this._dialEl = el;
+      el.scrollTop = this.DIAL.base;
+      this._onDialScroll = () => {
+        const total = this.DIAL.slots * this.DIAL.pitch;
+        if (el.scrollTop < 1200 || el.scrollTop > 24000 - 1200) {
+          el.scrollTop = this.DIAL.base + (((el.scrollTop - this.DIAL.base) % total) + total) % total;
+        }
+        this.layoutDial(el);
+      };
+      el.addEventListener('scroll', this._onDialScroll, { passive: true });
+      this.layoutDial(el);
+    } else if (!el && this._dialEl) {
+      this._dialEl.removeEventListener('scroll', this._onDialScroll);
+      this._dialEl = null;
+    }
+  }
+
+  layoutDial(el) {
+    const { slots, pitch, step, radius, cull } = this.DIAL;
+    const total = slots * pitch;
+    const off = el.scrollTop;
+    el.querySelectorAll('[data-dial-slot]').forEach((node, i) => {
+      let a = (i * pitch - off) % total;
+      a = ((a % total) + total) % total;
+      if (a > total / 2) a -= total;
+      const theta = (a / pitch) * step;
+      const deg = theta * 180 / Math.PI;
+      if (Math.abs(deg) > cull) { node.style.visibility = 'hidden'; return; }
+      const y = radius * Math.sin(theta);
+      const scale = 1 - Math.abs(deg) / 110;
+      node.style.visibility = 'visible';
+      node.style.transform = `translateY(${y.toFixed(1)}px) rotate(${deg.toFixed(2)}deg) scale(${scale.toFixed(3)})`;
+      node.style.opacity = Math.max(0, 1 - Math.abs(deg) / 34).toFixed(2);
+      node.style.zIndex = String(100 - Math.round(Math.abs(deg)));
+    });
+  }
+
+  componentWillUnmount() {
+    if (this._dialEl) this._dialEl.removeEventListener('scroll', this._onDialScroll);
+  }
+
+  go = (screen) => this.setState({ screen });
+  toggleCategory = (key) => this.setState(s => ({ expandedCategory: s.expandedCategory === key ? null : key }));
+  toggleAllSources = () => this.setState(s => ({ allSourcesOpen: !s.allSourcesOpen }));
+  toggleSetting = (key) => this.setState(s => ({ toggles: { ...s.toggles, [key]: !s.toggles[key] } }));
+  openDeleteConfirm = () => this.setState({ showDeleteConfirm: true });
+  cancelDelete = () => this.setState({ showDeleteConfirm: false });
+  confirmDelete = () => { this.setState({ showDeleteConfirm: false }); this.go('welcome'); };
+
+  showToast = (text) => {
+    this.setState({ toast: text });
+    clearTimeout(this._toastTimer);
+    this._toastTimer = setTimeout(() => this.setState({ toast: null }), 2200);
+  };
+
+  setChatInput = (e) => this.setState({ chatInput: e.target.value });
+  chatKeyDown = (e) => { if (e.key === 'Enter') this.sendChat(); };
+
+  sendChat = () => {
+    const text = (this.state.chatInput || '').trim();
+    if (!text) return;
+    this.setState(s => ({ chatMessages: [...s.chatMessages, { from: 'user', text }], chatInput: '', chatTyping: true }));
+    clearTimeout(this._chatTimer);
+    this._chatTimer = setTimeout(() => {
+      const replies = [
+        'Got it. I found three reels close to that, want the closest match or all three?',
+        'That one is saved under Recipes. Want the exact timestamp where he adds the garlic?',
+        'Pulled the caption and the top comment too. Anything specific you are after?'
+      ];
+      const reply = replies[Math.floor(Math.random() * replies.length)];
+      this.setState(s => ({ chatMessages: [...s.chatMessages, { from: 'bot', text: reply }], chatTyping: false }));
+    }, 1100);
+  };
+
+  sendChip = (text) => { this.setState({ chatInput: text }); setTimeout(() => this.sendChat(), 30); };
+  pickFile = () => this.setState({ uploadPicked: true });
+
+  importNow = () => {
+    if (!this.state.uploadPicked || this.state.importing) return;
+    this.setState({ importing: true });
+    setTimeout(() => { this.setState({ importing: false }); this.go('home'); }, 1300);
+  };
+
+  setField = (field) => (e) => this.setState({ [field]: e.target.value });
+
+  renderVals() {
+    const s = this.state;
+    const screen = s.screen;
+    const mainScreens = ['home', 'categories', 'chat', 'profile', 'settings'];
+    const showTabBar = mainScreens.includes(screen);
+
+    const tabDefs = [
+      { key: 'home', icon: '⌂' }, { key: 'categories', icon: '◎' }, { key: 'chat', icon: '✦' },
+      { key: 'profile', icon: '☰' }, { key: 'settings', icon: '⚙' },
+    ];
+    const makeTabs = (activeInk) => tabDefs.map(t => {
+      const active = screen === t.key;
+      return { key: t.key, icon: t.icon, bg: active ? '#6A67E0' : 'transparent', color: active ? '#FFFFFF' : (activeInk === 'light' ? 'rgba(243,239,226,0.6)' : 'rgba(21,23,15,0.6)'), onClick: () => this.go(t.key) };
+    });
+    const tabItems = makeTabs('dark');
+    const tabItemsDark = makeTabs('light');
+
+    const categoryDefs = [
+      { key: 'recipes', name: 'RECIPES', count: 48, bg: '#E8AC3D', text: '#15170F', tags: ['UNDER 15 MIN', 'VEGETARIAN', 'HIGH PROTEIN'], icon: './icon-recipes.png' },
+      { key: 'workouts', name: 'WORKOUTS', count: 22, bg: '#E85C3F', text: '#FFFFFF', tags: ['NO EQUIPMENT', '15 MIN', 'STRENGTH'], icon: './icon-workouts.png' },
+      { key: 'travel', name: 'TRAVEL', count: 16, bg: '#6A67E0', text: '#FFFFFF', tags: ['BUDGET', 'SOLO', 'ASIA'], icon: './icon-travel.png' },
+      { key: 'reading', name: 'READING', count: 14, bg: '#15170F', text: '#F3EFE2', tags: ['FICTION', 'QUICK READ', 'AUDIO'], icon: './icon-reading.png' },
+      { key: 'fashion', name: 'FASHION', count: 12, bg: '#C7D3C3', text: '#15170F', tags: ['STREETWEAR', 'FALL', 'THRIFTED'], icon: './icon-fashion.png' },
+    ];
+    const dialSlots = Array.from({ length: 30 }, (_, i) => {
+      const c = categoryDefs[i % categoryDefs.length];
+      return {
+        ...c, key: c.key + '-' + i,
+        subText: c.text === '#FFFFFF' || c.text === '#F3EFE2' ? 'rgba(255,255,255,0.78)' : 'rgba(21,23,15,0.65)',
+        onClick: () => this.toggleCategory(c.key),
+      };
+    });
+    const categories = categoryDefs.map((c, i) => ({
+      ...c, expanded: s.expandedCategory === c.key,
+      subText: c.text === '#FFFFFF' ? 'rgba(255,255,255,0.8)' : 'rgba(21,23,15,0.65)',
+      collapsed: s.expandedCategory !== c.key,
+      onClick: () => this.toggleCategory(c.key),
+      splash: ['linear-gradient(306deg,#E85C3F,#6A67E0)', 'linear-gradient(306deg,#6A67E0,#E8AC3D)', 'linear-gradient(306deg,#E8AC3D,#E85C3F)', 'linear-gradient(306deg,#E85C3F,#E8AC3D)', 'linear-gradient(306deg,#6A67E0,#E85C3F)'][i % 5],
+      z: categoryDefs.length - i,
+    }));
+
+    const toggleRow = (label, key) => ({
+      label, isToggle: true, labelColor: '#15170F',
+      trackBg: s.toggles[key] ? '#6A67E0' : '#CCC4B3',
+      knobLeft: s.toggles[key] ? '22px' : '2px',
+      onClick: () => this.toggleSetting(key),
+    });
+
+    const chevronRow = (label, sub, onClick, danger) => ({
+      label, sub, isChevron: true, labelColor: danger ? '#E85C3F' : '#15170F',
+      chevronBg: danger ? '#E85C3F' : '#15170F', chevronColor: '#FFFFFF', onClick,
+    });
+
+    const settingsGroups = [
+      { eyebrow: 'LIBRARY', rows: [
+        chevronRow('Import from Instagram', 'Add older saves anytime', () => this.go('import2')),
+        { label: 'Quality', isChip: true, labelColor: '#15170F', chipLabel: 'FAST', chipBg: '#E8AC3D', chipText: '#15170F' },
+        toggleRow('Auto-delete stale items', 'autoDelete'),
+      ]},
+      { eyebrow: 'NOTIFICATIONS', rows: [
+        toggleRow('Save ready to search', 'saveReady'),
+        toggleRow('Weekly digest', 'weeklyDigest'),
+        toggleRow('Failed saves', 'failedSaves'),
+      ]},
+      { eyebrow: 'ACCOUNT', rows: [
+        chevronRow('Data export', 'Download everything as JSON', () => this.showToast('EXPORT STARTED')),
+        chevronRow('Sign out', null, () => this.go('welcome')),
+      ]},
+      { eyebrow: 'DANGER ZONE', rows: [
+        chevronRow('Delete account', null, () => this.openDeleteConfirm(), true),
+      ]},
+    ];
+
+    const connectedSources = [
+      { name: 'INSTAGRAM', bg: '#E8AC3D', status: 'CONNECTED · 210 REELS' },
+      { name: 'PINTEREST', bg: '#E8AC3D', status: 'CONNECTED · 7 BOARDS' },
+      { name: 'YOUTUBE', bg: 'rgba(243,239,226,0.7)', status: 'NOT CONNECTED' },
+      { name: 'X / TWITTER', bg: 'rgba(243,239,226,0.7)', status: 'NOT CONNECTED' },
+    ];
+
+    const recentThumbs = [{ bg: '#E8AC3D' }, { bg: '#E85C3F' }, { bg: '#6A67E0' }, { bg: '#AEBFA9' }];
+    const collectionRails = [
+      { name: 'RECIPES', count: '48 REELS', bg: '#E8AC3D', text: '#15170F', subText: 'rgba(21,23,15,0.65)', badge: 'NEW' },
+      { name: 'TRAVEL PLACES', count: '22 REELS', bg: '#15170F', text: '#F3EFE2', subText: 'rgba(243,239,226,0.65)', badge: null },
+    ];
+    const chartBars = [30, 55, 40, 70, 45, 90, 60].map(h => ({ h: h + '%', color: 'rgba(255,255,255,0.75)' }));
+
+    const chatMessages = s.chatMessages.map(m => ({ text: m.text, isUser: m.from === 'user', isBot: m.from !== 'user', card: m.card || null }));
+    const suggestionChips = ['OPEN ORIGINAL', 'SAVE TO DESIGN', 'FIND SIMILAR'].map(label => ({ label, onClick: () => this.sendChip(label.charAt(0) + label.slice(1).toLowerCase()) }));
+
+    const exportSteps = [
+      { num: '01', title: 'OPEN INSTAGRAM', desc: 'Settings → Accounts Center → Your information and permissions' },
+      { num: '02', title: 'REQUEST YOUR DATA', desc: 'Tap "Export your information" → "Create export" → choose your account' },
+      { num: '03', title: 'PICK YOUR SAVED CONTENT', desc: 'Under "customize information", select ONLY "Saved" and "Collections", format HTML, all time' },
+      { num: '04', title: 'WAIT FOR THE EMAIL', desc: 'Meta will email you a ZIP download link within a few hours' },
+    ];
+
+    const dropzoneLabel = s.importing ? 'IMPORTING…' : (s.uploadPicked ? 'REEL_EXPORT.ZIP SELECTED' : 'TAP TO PICK YOUR ZIP FILE');
+    const dropzoneSub = s.uploadPicked ? 'ready to import' : 'or drag it in from Files';
+    const importLabel = s.importing ? 'IMPORTING…' : 'IMPORT NOW';
+    const importBtnBg = s.uploadPicked ? '#E85C3F' : '#AEBFA9';
+    const importBtnText = s.uploadPicked ? '#FFFFFF' : 'rgba(21,23,15,0.4)';
+
+    const screenLabels = [
+      ['welcome', 'Welcome'], ['import1', 'Import 1'], ['import2', 'Import 2'], ['import3', 'Import 3'],
+      ['login', 'Login'], ['signup', 'Signup'], ['home', 'Home'], ['categories', 'Categories'],
+      ['chat', 'Chat'], ['profile', 'Profile'], ['settings', 'Settings'],
+    ];
+    const allScreens = screenLabels.map(([key, label]) => ({
+      label, onClick: () => this.go(key),
+      bg: screen === key ? '#15170F' : '#FFFFFF',
+      color: screen === key ? '#F3EFE2' : '#15170F',
+    }));
+
+    const sourceBarFrontLabel = s.allSourcesOpen ? 'INSTAGRAM ONLY' : 'ALL SOURCES';
+    const sourceBarBackLabel = s.allSourcesOpen ? 'ALL SOURCES' : 'INSTAGRAM ONLY';
+
+    return {
+      screen,
+      sourceBarFrontLabel, sourceBarBackLabel, sourceBarFrontRotate: '-2deg', sourceBarBackRotate: '3deg',
+      isWelcome: screen === 'welcome', isImport1: screen === 'import1', isImport2: screen === 'import2', isImport3: screen === 'import3',
+      isLogin: screen === 'login', isSignup: screen === 'signup',
+      isHome: screen === 'home', isCategories: screen === 'categories', isChat: screen === 'chat', isProfile: screen === 'profile', isSettings: screen === 'settings',
+      showTabBar, deviceW: 390, deviceH: 844, categoriesScrollRef: this.categoriesScrollRef,
+      go_welcome: () => this.go('welcome'), go_import1: () => this.go('import1'), go_import2: () => this.go('import2'), go_import3: () => this.go('import3'),
+      go_login: () => this.go('login'), go_signup: () => this.go('signup'), go_home: () => this.go('home'), go_categories: () => this.go('categories'),
+      go_chat: () => this.go('chat'), go_profile: () => this.go('profile'), go_settings: () => this.go('settings'),
+      tabItems, tabItemsDark, categories, dialSlots, settingsGroups, connectedSources, recentThumbs, collectionRails, chartBars,
+      suggestionChips, exportSteps, allScreens,
+      allSourcesOpen: s.allSourcesOpen, toggleAllSources: this.toggleAllSources,
+      showDeleteConfirm: s.showDeleteConfirm, cancelDelete: this.cancelDelete, confirmDelete: this.confirmDelete,
+      toast: s.toast,
+      uploadPicked: s.uploadPicked, importing: s.importing, pickFile: this.pickFile, importNow: this.importNow,
+      dropzoneLabel, dropzoneSub, importLabel, importBtnBg, importBtnText,
+      chatMessages, chatInput: s.chatInput, chatTyping: s.chatTyping,
+      setChatInput: this.setChatInput, sendChat: this.sendChat, chatKeyDown: this.chatKeyDown,
+      signupName: s.signupName, signupEmail: s.signupEmail, signupPassword: s.signupPassword,
+      loginEmail: s.loginEmail, loginPassword: s.loginPassword,
+      onLoginEmailChange: this.setField('loginEmail'), onLoginPasswordChange: this.setField('loginPassword'),
+      onSignupNameChange: this.setField('signupName'), onSignupEmailChange: this.setField('signupEmail'), onSignupPasswordChange: this.setField('signupPassword'),
+    };
+  }
+}
+</script>
+</body>
+</html>
