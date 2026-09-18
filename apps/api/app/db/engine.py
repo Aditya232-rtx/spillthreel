@@ -28,12 +28,20 @@ def get_engine() -> AsyncEngine:
     global _engine
     if _engine is None:
         settings = get_settings()
+        # Supabase's transaction pooler (:6543) is pgbouncer in transaction
+        # mode — it doesn't support asyncpg's server-side prepared-statement
+        # cache. Disable it via connect_args so we can safely use the pooler
+        # for the app's OLTP traffic. `pool_pre_ping` is unnecessary since
+        # pgbouncer manages the underlying pool for us.
         _engine = create_async_engine(
             settings.database_url,
             echo=settings.database_echo,
-            pool_pre_ping=True,
             pool_size=5,
             max_overflow=10,
+            connect_args={
+                "statement_cache_size": 0,
+                "prepared_statement_cache_size": 0,
+            },
         )
     return _engine
 

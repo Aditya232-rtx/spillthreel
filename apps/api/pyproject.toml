@@ -19,8 +19,9 @@ dependencies = [
   "asyncpg>=0.30",
   "alembic>=1.14",
   "ulid-py>=1.1",
-  # Auth
-  "firebase-admin>=6.6",
+  # Auth — Supabase JWT verification (asymmetric ES256/RS256 via JWKS +
+  # legacy HS256 fallback). PyJWT[crypto] pulls in cryptography for EC/RSA.
+  "pyjwt[crypto]>=2.10",
   # Observability
   "structlog>=24.4",
   "sentry-sdk[fastapi]>=2.19",

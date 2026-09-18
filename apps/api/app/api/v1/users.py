@@ -1,8 +1,11 @@
 """GET/DELETE /v1/me — profile fetch + account deletion.
 
-Deletion is async: the endpoint soft-flags `users.deleted_at`, then
-enqueues a `delete_user` task that cascades to Cognee, GCS, and
-Firebase Auth (see architecture.md §4.5).
+Deletion is async: the endpoint soft-flags `profiles.deleted_at`, then
+enqueues a `delete_user` task. The task calls Supabase Admin API's
+`auth.admin.deleteUser(id)` which cascades to `profiles` (FK ON DELETE
+CASCADE), which in turn cascades to every user-scoped table. It also
+purges the user's Cognee namespace and the `media/{user_id}/` prefix in
+Supabase Storage (see architecture.md §4.5).
 """
 
 from __future__ import annotations
@@ -22,13 +25,15 @@ _logger = get_logger(__name__)
 
 class MeResponse(BaseModel):
     id: str
-    email: str | None
     display_name: str | None
+    avatar_url: str | None
 
 
 @router.get("/me", response_model=MeResponse)
 async def get_me(user: CurrentUser) -> MeResponse:
-    return MeResponse(id=user.id, email=user.email, display_name=user.display_name)
+    # `email` lives on Supabase's auth.users, not our profiles mirror.
+    # If the client needs it, read from the JWT claims client-side.
+    return MeResponse(id=user.id, display_name=user.display_name, avatar_url=user.avatar_url)
 
 
 @router.delete("/me", status_code=status.HTTP_202_ACCEPTED)

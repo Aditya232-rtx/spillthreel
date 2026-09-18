@@ -6,7 +6,7 @@ Contract per TRD §6.5:
             { itemId, state, duplicateOf }
 
 Flow:
-  1. Auth (Firebase ID token → CurrentUser).
+  1. Auth (Supabase JWT → CurrentUser).
   2. Normalize URL, detect platform (400 on unsupported).
   3. INSERT items ON CONFLICT DO NOTHING (dedup on user_id+source_url_norm).
      If conflict, look up existing item and return duplicateOf.

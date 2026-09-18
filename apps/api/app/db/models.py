@@ -39,15 +39,24 @@ class Base(DeclarativeBase, MappedAsDataclass):
 
 
 # ---------------------------------------------------------------------------
-# users
+# profiles — custom fields for Supabase's auth.users.
+#
+# Supabase provides `auth.users` automatically; we do NOT create our own
+# users table. `profiles.id` is the SAME UUID as `auth.users.id`, wired
+# up in the migration via `ON DELETE CASCADE` so account deletion
+# cleans everything up in one shot.
+#
+# Note: we can't declare the FK to `auth.users` at the ORM level (it
+# lives in a different Postgres schema Supabase manages), so it's
+# declared in the raw SQL migration only. From SQLAlchemy's POV this
+# is just a table keyed by a UUID whose provenance is external.
 # ---------------------------------------------------------------------------
-class User(Base):
-    __tablename__ = "users"
+class Profile(Base):
+    __tablename__ = "profiles"
 
-    id: Mapped[str] = mapped_column(String, primary_key=True)
-    firebase_uid: Mapped[str] = mapped_column(String, unique=True, nullable=False)
-    email: Mapped[str | None] = mapped_column(String, default=None)
+    id: Mapped[str] = mapped_column(String, primary_key=True)  # UUID == auth.users.id
     display_name: Mapped[str | None] = mapped_column(String, default=None)
+    avatar_url: Mapped[str | None] = mapped_column(String, default=None)
     created_at: Mapped[datetime] = mapped_column(
         TIMESTAMP(timezone=True),
         server_default=text("now()"),
@@ -94,7 +103,7 @@ class Item(Base):
 
     id: Mapped[str] = mapped_column(String, primary_key=True)
     user_id: Mapped[str] = mapped_column(
-        String, ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+        String, ForeignKey("profiles.id", ondelete="CASCADE"), nullable=False
     )
     source_url: Mapped[str] = mapped_column(Text, nullable=False)
     source_url_norm: Mapped[str] = mapped_column(Text, nullable=False)
@@ -144,7 +153,7 @@ class Category(Base):
 
     id: Mapped[str] = mapped_column(String, primary_key=True)
     user_id: Mapped[str] = mapped_column(
-        String, ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+        String, ForeignKey("profiles.id", ondelete="CASCADE"), nullable=False
     )
     name: Mapped[str] = mapped_column(String, nullable=False)
     source: Mapped[str] = mapped_column(String, nullable=False)
@@ -192,7 +201,7 @@ class Collection(Base):
 
     id: Mapped[str] = mapped_column(String, primary_key=True)
     user_id: Mapped[str] = mapped_column(
-        String, ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+        String, ForeignKey("profiles.id", ondelete="CASCADE"), nullable=False
     )
     name: Mapped[str] = mapped_column(String, nullable=False)
     privacy: Mapped[str] = mapped_column(String, nullable=False)
@@ -227,7 +236,7 @@ class Import(Base):
 
     id: Mapped[str] = mapped_column(String, primary_key=True)
     user_id: Mapped[str] = mapped_column(
-        String, ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+        String, ForeignKey("profiles.id", ondelete="CASCADE"), nullable=False
     )
     state: Mapped[str] = mapped_column(String, nullable=False)  # 'parsing' | 'indexing' | 'complete' | 'failed'
     total_parsed: Mapped[int] = mapped_column(Integer, server_default=text("0"), default=0)
@@ -253,7 +262,7 @@ class SavedAudio(Base):
 
     id: Mapped[str] = mapped_column(String, primary_key=True)
     user_id: Mapped[str] = mapped_column(
-        String, ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+        String, ForeignKey("profiles.id", ondelete="CASCADE"), nullable=False
     )
     source_type: Mapped[str] = mapped_column(String, nullable=False)
     title: Mapped[str | None] = mapped_column(String, default=None)
@@ -282,7 +291,7 @@ class PushToken(Base):
     __tablename__ = "push_tokens"
 
     user_id: Mapped[str] = mapped_column(
-        String, ForeignKey("users.id", ondelete="CASCADE"), primary_key=True
+        String, ForeignKey("profiles.id", ondelete="CASCADE"), primary_key=True
     )
     token: Mapped[str] = mapped_column(String, primary_key=True)
     platform: Mapped[str] = mapped_column(String, nullable=False)  # 'ios' | 'android'

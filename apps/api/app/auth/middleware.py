@@ -1,10 +1,11 @@
-"""FastAPI dependency that verifies the Firebase ID token and returns the
-signed-in user, upserting a `users` row on first login.
+"""FastAPI dependency that verifies the Supabase JWT and returns the
+signed-in user, upserting a `profiles` row on first login.
 
 Usage:
     @router.get("/some")
     async def handler(user: CurrentUser, session: DbSession) -> ...:
-        # `user.id` is our internal ULID; `user.firebase_uid` is Firebase's.
+        # `user.id` is the Supabase auth.users(id) UUID — same value on
+        # all downstream tables' user_id columns.
 """
 
 from __future__ import annotations
@@ -12,13 +13,12 @@ from __future__ import annotations
 from typing import Annotated
 
 from fastapi import Depends, Header, HTTPException, status
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
-from ulid import ULID
 
-from app.auth.firebase import FirebaseAuthError, verify_id_token
+from app.auth.supabase_auth import SupabaseAuthError, verify_access_token
 from app.db.engine import get_session
-from app.db.models import User
+from app.db.models import Profile
 from app.observability.logging import get_logger
 
 _logger = get_logger(__name__)
@@ -29,7 +29,7 @@ DbSession = Annotated[AsyncSession, Depends(get_session)]
 async def _current_user(
     authorization: Annotated[str | None, Header()] = None,
     session: DbSession = ...,  # type: ignore[assignment]
-) -> User:
+) -> Profile:
     if not authorization or not authorization.lower().startswith("bearer "):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -39,8 +39,8 @@ async def _current_user(
     token = authorization.split(" ", 1)[1].strip()
 
     try:
-        claims = await verify_id_token(token)
-    except FirebaseAuthError as e:
+        claims = verify_access_token(token)
+    except SupabaseAuthError as e:
         _logger.warning("auth.token_invalid", reason=str(e))
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -48,31 +48,43 @@ async def _current_user(
             headers={"WWW-Authenticate": "Bearer"},
         ) from e
 
-    firebase_uid = claims["uid"]
-    email = claims.get("email")
-    display_name = claims.get("name")
+    user_id: str = claims["sub"]
+    email: str | None = claims.get("email")
+    display_name: str | None = (
+        claims.get("user_metadata", {}).get("full_name")
+        or claims.get("user_metadata", {}).get("name")
+        or email
+    )
 
-    result = await session.execute(select(User).where(User.firebase_uid == firebase_uid))
-    user = result.scalar_one_or_none()
+    # Set RLS claim on this transaction so any RLS policies (`auth.uid()
+    # = user_id`) fire naturally on subsequent queries — defense-in-depth
+    # even though the backend connects with the service-role key, which
+    # normally bypasses RLS. See TRD §15.3.
+    await session.execute(
+        text("SELECT set_config('request.jwt.claim.sub', :sub, true)"),
+        {"sub": user_id},
+    )
 
-    if user is None:
-        user = User(
-            id=str(ULID()),
-            firebase_uid=firebase_uid,
-            email=email,
-            display_name=display_name,
-        )
-        session.add(user)
+    result = await session.execute(select(Profile).where(Profile.id == user_id))
+    profile = result.scalar_one_or_none()
+
+    if profile is None:
+        # First login for this UUID — Supabase already inserted the
+        # auth.users row on OAuth callback; we mirror our profile row.
+        # (In prod, the DB trigger `on_auth_user_created` handles this
+        # automatically; this upsert is the belt-and-suspenders path
+        # for local dev where the trigger may not be installed yet.)
+        profile = Profile(id=user_id, display_name=display_name)
+        session.add(profile)
         await session.commit()
-        await session.refresh(user)
-        _logger.info("auth.user_created", user_id=user.id, firebase_uid=firebase_uid)
-    elif user.deleted_at is not None:
-        # Soft-deleted account still owns this Firebase UID — refuse.
+        await session.refresh(profile)
+        _logger.info("auth.profile_created", user_id=user_id)
+    elif profile.deleted_at is not None:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN, detail="account deleted"
         )
 
-    return user
+    return profile
 
 
-CurrentUser = Annotated[User, Depends(_current_user)]
+CurrentUser = Annotated[Profile, Depends(_current_user)]

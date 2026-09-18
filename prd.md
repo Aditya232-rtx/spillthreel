@@ -246,7 +246,7 @@ Saves educational shorts (finance, science, coding, languages). Wants to build a
 **Sub-features:**
 
 - **F5.1 — Sign-in options.** Google Sign-In (mandatory), Apple Sign-In (mandatory for App Store approval), Email/password (fallback).
-- **F5.2 — Supabase Auth backend.** Tokens are issued and verified via Supabase Auth (JWT-based). Backend validates the Supabase JWT on every request using the shared JWT secret (offline verify, ~1µs per request after warmup).
+- **F5.2 — Supabase Auth backend.** Tokens are issued by Supabase Auth (asymmetric ES256/RS256 JWTs by default on new projects). Backend verifies the JWT signature offline via the project's public JWKS endpoint (`{SUPABASE_URL}/auth/v1/.well-known/jwks.json`), cached in-process for ~10 minutes — no per-request round-trip to Supabase after warmup. Legacy HS256 secrets are supported as a fallback for older projects; the middleware branches on the token's `alg` header.
 - **F5.3 — Session persistence.** Refresh tokens stored in `expo-secure-store` (iOS Keychain / Android Keystore).
 - **F5.4 — Bulk import invitation (optional, dismissible, anytime).** Immediately after first sign-in, an onboarding card offers: *"Bring in your saved Instagram reels — takes 60 seconds."* Tapping it launches F8's guided flow.
   - The card has three equally-weighted actions: **Import now**, **Maybe later** (dismisses for this session), and **Skip forever** (never shown again on onboarding).

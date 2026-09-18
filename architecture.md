@@ -715,25 +715,36 @@ Any step can fail; failure is captured in `items.failure_reason` and drives the 
 ## 10. Auth & Session Topology
 
 ```
-Client                                    Supabase Auth         Backend
-  │                                             │                 │
-  │ Google/Apple/Email flow                     │                 │
-  │─────────────────────────────────────────────►│                 │
-  │                                             │                 │
-  │◄──── Access JWT (HS256, 1hr) + Refresh Token│                 │
-  │                                             │                 │
-  │ POST /v1/saves                              │                 │
-  │  Authorization: Bearer <access JWT>         │                 │
-  │─────────────────────────────────────────────┼────────────────►│
-  │                                             │  jwt.decode()   │
-  │                                             │  (offline,      │
-  │                                             │   SUPABASE_JWT  │
-  │                                             │   _SECRET, ~1µs)│
-  │◄──────────────── 201 Created ───────────────┼─────────────────│
+Client                                    Supabase Auth              Backend
+  │                                             │                       │
+  │ Google/Apple/Email flow                     │                       │
+  │─────────────────────────────────────────────►│                       │
+  │                                             │                       │
+  │◄──── Access JWT (ES256, 1hr) + Refresh Token│                       │
+  │                                             │                       │
+  │                                             │◄── GET /jwks.json ────┤ (first req only,
+  │                                             │                       │  cached ~10 min)
+  │                                             │───── JWKS (pub key)──►│
+  │                                             │                       │
+  │ POST /v1/saves                              │                       │
+  │  Authorization: Bearer <access JWT>         │                       │
+  │─────────────────────────────────────────────┼──────────────────────►│
+  │                                             │       jwt.decode(     │
+  │                                             │         token,        │
+  │                                             │         PyJWKClient   │
+  │                                             │           .get_key(   │
+  │                                             │             kid),     │
+  │                                             │         alg=ES256,    │
+  │                                             │         aud="auth-    │
+  │                                             │              enticated")
+  │                                             │       ~1µs, offline   │
+  │◄──────────── 201 Created ───────────────────┼───────────────────────│
 ```
 
 - Access JWT auto-rotated every ~1h by the Supabase JS SDK on the client — transparent to the app.
 - Backend never sees the refresh token; verification is fully offline (no per-request round-trip to Supabase).
+- Backend fetches the public JWKS from `{SUPABASE_URL}/auth/v1/.well-known/jwks.json` on first token verify, then caches in-process for ~10 minutes matching Supabase's edge TTL. Signing-key rotation is transparent — an unknown `kid` triggers a refetch.
+- Middleware branches on the token's `alg` header, so legacy HS256 tokens (older projects, or during a rotation window) are verified against `SUPABASE_LEGACY_JWT_SECRET` instead.
 - Share extension reads the currently valid access token from the shared App Group / EncryptedSharedPreferences; if expired, extension calls Supabase's token refresh endpoint directly (~200ms) using the stored refresh token before POSTing to `/v1/saves`.
 - Backend inside a request handler `SET`s `request.jwt.claim.sub = <user_id>` on the Postgres session so that Supabase RLS policies fire naturally on every subsequent query in that transaction.
 

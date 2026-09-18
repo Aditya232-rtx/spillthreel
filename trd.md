@@ -98,9 +98,10 @@ Rationale: mobile + backend evolve together; single-repo minimizes coordination 
 
 ### 5.2 Auth flow
 
-- `@supabase/supabase-js` on the client — one dependency covers auth + DB + storage.
+- `@supabase/supabase-js` on the client (latest — needed for `sb_publishable_…` key format) — one dependency covers auth + DB + storage.
+- Client initialized with `SUPABASE_URL` + `SUPABASE_PUBLISHABLE_KEY` (the new-format public key that replaces `anon`; RLS still gates every read/write).
 - Sign-in via `supabase.auth.signInWithOAuth({ provider: 'google' | 'apple' })` (opens native OAuth flow via `expo-web-browser` + `expo-auth-session`) or `signInWithPassword` for email.
-- Access token (JWT, 1h TTL) attached to every backend request as `Authorization: Bearer <token>`. Token refresh handled automatically by the Supabase JS client; backend verifies the JWT signature offline using the shared `SUPABASE_JWT_SECRET` (no network round-trip per request).
+- Access token (asymmetric ES256 JWT, 1h TTL) attached to every backend request as `Authorization: Bearer <token>`. Token refresh handled automatically by the Supabase JS client; backend verifies the JWT signature offline against the project's public JWKS endpoint (no shared secret, no per-request round-trip).
 - Session (access + refresh tokens) persisted in `expo-secure-store` (Keychain / Keystore) via the Supabase client's custom storage adapter.
 - Shared with iOS Share Extension via App Group (`group.com.spillthereel.shared`) and with Android share intent via Encrypted SharedPreferences. The share extension bundles a lightweight helper that reads the current access token and, if expired, calls Supabase's token-refresh endpoint directly (~200ms) before POSTing to `/v1/saves`.
 
@@ -187,11 +188,14 @@ interface Collection {
 
 Every route below `/v1/` requires `Authorization: Bearer <Supabase JWT>`. Middleware:
 1. Extracts token.
-2. Verifies via `jwt.decode(token, SUPABASE_JWT_SECRET, algorithms=["HS256"], audience="authenticated")` using `PyJWT` — pure offline signature check, ~1µs per verify (no network).
+2. Reads the unverified header via `jwt.get_unverified_header(token)` and branches on `alg`:
+   * `ES256` / `RS256` (new asymmetric default): fetch the signing key from `{SUPABASE_URL}/auth/v1/.well-known/jwks.json` using `PyJWKClient`, matching by `kid`. JWKS response is cached in-process for ~10 minutes (Supabase's edge TTL) and refetched on unknown `kid` so key rotation is transparent.
+   * `HS256` (legacy): fall back to `SUPABASE_LEGACY_JWT_SECRET` if configured, else reject.
+   Then `jwt.decode(token, key, algorithms=[alg], audience="authenticated")` — pure offline signature check, ~1µs per verify after warmup.
 3. Extracts `sub` claim = the Supabase user UUID; this IS our `users.id` (see §9 — we adopt Supabase's `auth.users(id)` as the PK, no ULID indirection).
 4. On first request from a new UUID, upserts a `profiles` row (display_name, avatar_url, etc — the Supabase-idiom side table for custom user fields, since `auth.users` is minimal by design).
 5. Injects `current_user: User` into request state.
-6. Rejects with 401 on invalid signature / expired / audience mismatch.
+6. Rejects with 401 on invalid signature / expired / audience mismatch / unsupported `alg` with no fallback configured.
 
 **Defense-in-depth:** the middleware also sets `session.execute("SET request.jwt.claim.sub = :sub")` at the start of each transaction so that Supabase's RLS policies fire naturally on every query — even if a handler forgets a `WHERE user_id = ...` filter, RLS blocks cross-user access at the DB layer.
 
@@ -894,9 +898,9 @@ Per-extractor per-platform success rate is a first-class metric (§17).
 | Cloud Tasks | GCP | 3 queues: `ingest`, `import`, `enhance` | Per-queue rate limits & retry policies |
 | Postgres | **Supabase** | Pro tier ($25/mo flat, 8 GB, autoscaling storage) | Session-mode pooler on `:6543` for the API; direct on `:5432` for Alembic |
 | Object storage | **Supabase Storage** | 2 buckets: `media` (private, thumbnails), `exports` (private, GDPR JSON) | RLS-scoped; signed URLs for client fetches, 24h TTL for exports |
-| Auth | **Supabase Auth** | Google + Apple + Email providers | JWT signed with `SUPABASE_JWT_SECRET`; backend verifies offline |
+| Auth | **Supabase Auth** | Google + Apple + Email providers | Asymmetric JWTs (ES256/RS256); backend verifies offline via project's public JWKS |
 | GKE Autopilot | GCP | Cobalt namespace, 2–10 pods | Same region as Cloud Run |
-| Secret Manager | GCP | Supabase URL/anon/service-role/JWT secret, Gemini key, Groq key, Cobalt API key, Cognee API key | IAM-gated to Cloud Run service accounts |
+| Secret Manager | GCP | Supabase URL + publishable key + secret key (+ optional legacy JWT secret), Gemini key, Groq key, Cobalt API key, Cognee API key | IAM-gated to Cloud Run service accounts. JWKS is a public URL — not a secret. |
 | Cloud CDN | GCP | In front of Supabase Storage signed URLs | Cache TTL 30d for thumbnails |
 
 ### 13.2 Environments
@@ -949,9 +953,10 @@ Terraform in `infra/terraform/`. State in GCS bucket with versioning. Modules pe
 
 ### 15.2 Auth
 
-- Supabase JWTs (HS256, signed with `SUPABASE_JWT_SECRET`). Verified offline via `PyJWT` — no network per request.
+- Supabase session JWTs (asymmetric ES256/RS256 by default; HS256 supported for legacy projects). Verified offline via `PyJWT` + `PyJWKClient` fetching the project's public JWKS — no shared secret to leak on the backend, no per-request network hop after warmup.
 - No custom session cookies. No CSRF concerns (Bearer tokens only, no cookie auth).
 - Refresh tokens live in the mobile keychain, never touch our backend.
+- Signing-key rotation on Supabase's side is transparent: JWKS is cached ~10 minutes and refetched automatically on an unknown `kid`.
 
 ### 15.3 Authorization (defense-in-depth, three layers)
 
@@ -965,7 +970,12 @@ Every Supabase Storage signed URL is scoped to the specific object; the bucket i
 
 - All API keys in Secret Manager, mounted to Cloud Run at boot via env var refs.
 - No secrets in code, `.env`, or CI. `.env.example` documents required var names only.
-- **Supabase secrets** (SECRET vs public labels): `SUPABASE_URL` — public; `SUPABASE_ANON_KEY` — public (RLS enforces safety, safe to ship in the mobile bundle); `SUPABASE_SERVICE_ROLE_KEY` — SECRET, backend-only, bypasses RLS; `SUPABASE_JWT_SECRET` — SECRET, backend-only, used for offline JWT verify.
+- **Supabase secrets** (SECRET vs public labels — new-format keys):
+  - `SUPABASE_URL` — public; ships in mobile bundle.
+  - `SUPABASE_PUBLISHABLE_KEY` (`sb_publishable_…`) — public; replaces legacy `anon`. RLS enforces safety.
+  - `SUPABASE_SECRET_KEY` (`sb_secret_…`) — SECRET, backend-only, bypasses RLS. Sent on the `apikey` header (the new keys refuse `Authorization: Bearer` — a nice fail-loudly guardrail vs the old service_role behavior).
+  - `SUPABASE_LEGACY_JWT_SECRET` — SECRET, backend-only, OPTIONAL. Only needed if the project still has a legacy HS256 secret active; new projects verify via the public JWKS instead and can leave this unset.
+- The primary JWT-verification key material (public JWKS) is **not a secret** — it's fetched from a public URL. This is a security upgrade over the old shared-secret model: leaking the JWKS doesn't help an attacker forge tokens (they'd need the private key, which never leaves Supabase's infra).
 
 ### 15.5 Input validation
 

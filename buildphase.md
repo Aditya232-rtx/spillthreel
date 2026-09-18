@@ -40,7 +40,7 @@ Phases are numbered 0–7. Phase 0 is setup and can start immediately. Phases 1�
 
 - GitHub repo `spillthereel` with the monorepo structure from architecture.md §5.
 - Terraform for `dev` (local + minimal GCP) and `staging` environments.
-- **Supabase projects (staging + prod)** with Auth, Postgres (RLS enabled), and Storage buckets `media` + `exports` provisioned. Google + Apple + Email providers configured. `SUPABASE_URL`, `SUPABASE_ANON_KEY`, `SUPABASE_SERVICE_ROLE_KEY`, `SUPABASE_JWT_SECRET`, `DATABASE_URL` (pooler `:6543`), `DATABASE_URL_DIRECT` (`:5432`) captured.
+- **Supabase projects (staging + prod)** with Auth, Postgres (RLS enabled), and Storage buckets `media` + `exports` provisioned. Google + Apple + Email providers configured. New-format keys captured: `SUPABASE_URL`, `SUPABASE_PUBLISHABLE_KEY` (`sb_publishable_…`), `SUPABASE_SECRET_KEY` (`sb_secret_…`), plus `DATABASE_URL` (pooler `:6543`) and `DATABASE_URL_DIRECT` (`:5432`). JWT verification uses the public JWKS at `{SUPABASE_URL}/auth/v1/.well-known/jwks.json` — no shared JWT secret needed for new projects.
 - Cognee Cloud Developer account created; API key in Secret Manager (staging).
 - Gemini API key + Groq API key + Cobalt API key generated and stored in Secret Manager (staging).
 - Expo project initialized with EAS Build configured for iOS + Android.
@@ -58,7 +58,7 @@ Phases are numbered 0–7. Phase 0 is setup and can start immediately. Phases 1�
 2. Init Expo app `apps/mobile/` with TypeScript strict, `expo-router`, Zustand, TanStack Query.
 3. Init FastAPI app `apps/api/` with Poetry / uv, pytest, ruff, mypy.
 4. Add Alembic + initial DB schema migration (`profiles` + `items` skeleton, RLS policies enabled).
-5. Wire Supabase project + JWT verification in FastAPI (`PyJWT` with `SUPABASE_JWT_SECRET`, HS256).
+5. Wire Supabase project + JWT verification in FastAPI (`PyJWT` + `PyJWKClient` for asymmetric ES256 via the public JWKS endpoint; fallback branch for HS256 if `SUPABASE_LEGACY_JWT_SECRET` is set).
 6. Write `MemoryStore`, `Extractor`, `SummaryModel`, `TranscriptionModel` protocols as empty ABCs — no implementations yet.
 7. Add `apps/api/app/settings.py` with all env vars enumerated.
 8. Write Terraform modules: Cloud Run, Cloud SQL, GCS, Secret Manager, Cloud Tasks, VPC connector, GKE Autopilot for Cobalt.
