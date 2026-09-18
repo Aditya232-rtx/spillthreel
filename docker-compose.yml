@@ -1,0 +1,58 @@
+# Local dev stack — used by scripts/local-dev.sh.
+# Provides Postgres + the API service; the worker uses the same image.
+# Cobalt runs as an unmodified upstream image.
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: spill
+      POSTGRES_PASSWORD: spill
+      POSTGRES_DB: spillthereel
+    ports:
+      - "5432:5432"
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U spill -d spillthereel"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  api:
+    build:
+      context: ./apps/api
+    environment:
+      ENVIRONMENT: dev
+      LOG_LEVEL: DEBUG
+      DATABASE_URL: postgresql+asyncpg://spill:spill@postgres:5432/spillthereel
+      FIREBASE_PROJECT_ID: ${FIREBASE_PROJECT_ID:-spillthereel-dev}
+      FIREBASE_CREDENTIALS_JSON: ${FIREBASE_CREDENTIALS_JSON:-}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      GROQ_API_KEY: ${GROQ_API_KEY:-}
+      COGNEE_API_KEY: ${COGNEE_API_KEY:-}
+      COBALT_BASE_URL: http://cobalt:9000
+      SENTRY_DSN: ${SENTRY_DSN:-}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./apps/api:/app:cached
+    command: >
+      sh -c "alembic upgrade head &&
+             uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload"
+
+  cobalt:
+    # Upstream image, unmodified — TRD §12.1.
+    image: ghcr.io/imputnet/cobalt:10
+    environment:
+      API_URL: http://localhost:9000/
+      API_PORT: 9000
+    ports:
+      - "9000:9000"
+    restart: unless-stopped
+
+volumes:
+  pg_data:

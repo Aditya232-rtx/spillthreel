@@ -32,7 +32,7 @@ Whereas the TRD documents *what* we use, this document documents *how it fits to
                  │                 │    │  (mini popup)    │    │  (silent toast) │
                  └────────┬────────┘    └────────┬─────────┘    └────────┬────────┘
                           │                       │                       │
-                          │        HTTPS + Bearer <Firebase ID Token>      │
+                          │        HTTPS + Bearer <Supabase JWT>           │
                           └───────────────────────┬───────────────────────┘
                                                   │
                                                   ▼
@@ -50,12 +50,12 @@ Whereas the TRD documents *what* we use, this document documents *how it fits to
               ┌──────────────────────────┼──────────────────┼──────────────────────────┐
               │                          │                  │                          │
               ▼                          ▼                  ▼                          ▼
-     ┌─────────────────┐        ┌───────────────┐   ┌───────────────┐        ┌────────────────┐
-     │ Firebase Auth   │        │ Cloud SQL     │   │ Cloud Tasks   │        │ Cognee Cloud   │
-     │ (token verify)  │        │ Postgres 16   │   │ 3 queues:     │        │ (memory / RAG) │
-     │                 │        │ (metadata)    │   │ ingest, import│        │  per-user      │
-     └─────────────────┘        └───────────────┘   │ enhance       │        │  namespaces    │
-                                                    └───────┬───────┘        └────────────────┘
+     ┌─────────────────┐        ┌────────────────────┐  ┌───────────────┐    ┌────────────────┐
+     │ Supabase Auth   │        │ Supabase Postgres  │  │ Cloud Tasks   │    │ Cognee Cloud   │
+     │ (JWT offline    │        │ (RLS-scoped,       │  │ 3 queues:     │    │ (memory / RAG) │
+     │  verify — HS256)│        │  auth.uid()=user)  │  │ ingest, import│    │  per-user      │
+     └─────────────────┘        └────────────────────┘  │ enhance       │    │  namespaces    │
+                                                        └───────┬───────┘    └────────────────┘
                                                             │                          ▲
                                                             ▼                          │
                                                 ┌───────────────────────┐              │
@@ -79,9 +79,12 @@ Whereas the TRD documents *what* we use, this document documents *how it fits to
                     └────────────────┘          └──────────────────┘
 
                     ┌──────────────────────────────┐
-                    │  Google Cloud Storage         │
-                    │  spillthereel-media bucket    │
-                    │  (thumbnails via Cloud CDN)   │
+                    │  Supabase Storage             │
+                    │   'media' bucket (thumbnails, │
+                    │   private, signed URLs +      │
+                    │   Cloud CDN in front)         │
+                    │   'exports' bucket (GDPR      │
+                    │   dumps, 24h signed URL)      │
                     └──────────────────────────────┘
 
                     ┌──────────────────────────────┐
@@ -668,14 +671,16 @@ Any step can fail; failure is captured in `items.failure_reason` and drives the 
                    │
                    ▼
     ┌──────────────────────────────┐
-    │ Cloud Run — api (public)     │◄──── outbound: Firebase Auth, Cognee, Gemini
-    │ 1 vCPU / 512MiB / min 1 max 20│
+    │ Cloud Run — api (public)     │◄──── outbound: Supabase (Auth + Postgres + Storage),
+    │ 1 vCPU / 512MiB / min 1 max 20│                Cognee, Gemini
     └──────────────┬───────────────┘
-                   │ VPC connector
+                   │ HTTPS to Supabase pooler:6543
                    ▼
     ┌──────────────────────────────┐
-    │ Cloud SQL Postgres (private) │
-    │ Private IP only              │
+    │ Supabase (managed, external) │
+    │  * Postgres (RLS enforced)   │
+    │  * Auth (JWT source)         │
+    │  * Storage (media + exports) │
     └──────────────────────────────┘
 
     ┌──────────────────────────────┐
@@ -683,8 +688,8 @@ Any step can fail; failure is captured in `items.failure_reason` and drives the 
     └──────────────┬───────────────┘
                    ▼ push HTTPS
     ┌──────────────────────────────┐
-    │ Cloud Run — worker (internal)│──── outbound: Cobalt, Gemini, Groq, Cognee, GCS
-    │ 2 vCPU / 2 GiB / min 0 max 30│
+    │ Cloud Run — worker (internal)│──── outbound: Cobalt, Gemini, Groq, Cognee,
+    │ 2 vCPU / 2 GiB / min 0 max 30│                Supabase (via service-role key)
     └──────────────────────────────┘
 
     ┌──────────────────────────────┐
@@ -692,8 +697,9 @@ Any step can fail; failure is captured in `items.failure_reason` and drives the 
     └──────────────────────────────┘
 
     ┌──────────────────────────────┐
-    │ GCS — spillthereel-media      │
-    │ + Cloud CDN for thumbnails    │
+    │ Cloud CDN                     │
+    │ in front of Supabase Storage  │
+    │ signed URLs (thumbnails)      │
     └──────────────────────────────┘
 ```
 
@@ -709,25 +715,27 @@ Any step can fail; failure is captured in `items.failure_reason` and drives the 
 ## 10. Auth & Session Topology
 
 ```
-Client                                    Firebase Auth         Backend
+Client                                    Supabase Auth         Backend
   │                                             │                 │
   │ Google/Apple/Email flow                     │                 │
   │─────────────────────────────────────────────►│                 │
   │                                             │                 │
-  │◄──── ID Token (JWT, 1hr TTL) + Refresh Token│                 │
+  │◄──── Access JWT (HS256, 1hr) + Refresh Token│                 │
   │                                             │                 │
   │ POST /v1/saves                              │                 │
-  │  Authorization: Bearer <ID Token>           │                 │
+  │  Authorization: Bearer <access JWT>         │                 │
   │─────────────────────────────────────────────┼────────────────►│
-  │                                             │  verify_id_token │
-  │                                             │◄────────────────►│
-  │                                             │  (cached certs)  │
-  │◄────────────── 201 Created ─────────────────┼─────────────────│
+  │                                             │  jwt.decode()   │
+  │                                             │  (offline,      │
+  │                                             │   SUPABASE_JWT  │
+  │                                             │   _SECRET, ~1µs)│
+  │◄──────────────── 201 Created ───────────────┼─────────────────│
 ```
 
-- ID token rotated every ~1h by Firebase SDK on the client — transparent.
-- Backend never sees the refresh token.
-- Share extension reads the currently valid ID token from the shared App Group / EncryptedSharedPreferences; if expired, extension asks the main app to refresh via a broadcast (Android) or App Group flag (iOS) with a 500ms deadline before falling back to using the possibly-expired token (backend's clock skew tolerance handles it).
+- Access JWT auto-rotated every ~1h by the Supabase JS SDK on the client — transparent to the app.
+- Backend never sees the refresh token; verification is fully offline (no per-request round-trip to Supabase).
+- Share extension reads the currently valid access token from the shared App Group / EncryptedSharedPreferences; if expired, extension calls Supabase's token refresh endpoint directly (~200ms) using the stored refresh token before POSTing to `/v1/saves`.
+- Backend inside a request handler `SET`s `request.jwt.claim.sub = <user_id>` on the Postgres session so that Supabase RLS policies fire naturally on every subsequent query in that transaction.
 
 ---
 
@@ -735,19 +743,21 @@ Client                                    Firebase Auth         Backend
 
 | Data | Store | Retention |
 |------|-------|-----------|
-| User account (metadata) | Postgres `users` | Indefinite, until account delete |
-| Item metadata | Postgres `items` | Indefinite, until item/account delete |
-| Item summary / transcript / caption | Postgres `items` (long text cols) | Same |
-| Ingestion audit trail | Postgres `ingestion_events` | 90 days (rolling delete job) |
+| User account (auth) | Supabase `auth.users` | Indefinite, until account delete (cascades to all our tables) |
+| User profile fields | Supabase `profiles` | Same |
+| Item metadata | Supabase `items` | Indefinite, until item/account delete |
+| Item summary / transcript / caption | Supabase `items` (long text cols) | Same |
+| Ingestion audit trail | Supabase `ingestion_events` | 90 days (rolling delete job) |
 | Cognee memory | Cognee Cloud | Same as item lifetime |
-| Thumbnails | GCS `spillthereel-media/thumbs/{user_id}/{item_id}.jpg` | Indefinite until delete |
+| Thumbnails | Supabase Storage `media/thumbs/{user_id}/{item_id}.jpg` | Indefinite until delete |
 | Source video (worker tmp) | Worker container tmpfs | Deleted within 15 min of processing |
 | IG export ZIP | Worker tmpfs | Deleted after parse or 15 min |
-| Push tokens | Postgres `push_tokens` | Until user signs out |
+| GDPR data export dump | Supabase Storage `exports/{user_id}/{timestamp}.json` | 24h then deleted |
+| Push tokens | Supabase `push_tokens` | Until user signs out |
 | Analytics | PostHog Cloud | 12 months rolling |
 | Sentry errors | Sentry | 90 days |
 | Logs / traces | Cloud Logging / Trace | 30 days |
-| Postgres backups | Cloud SQL automated | 7 days PITR |
+| Postgres backups | Supabase automated | 7 days PITR (Pro tier) |
 
 ---
 

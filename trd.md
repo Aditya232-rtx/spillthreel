@@ -37,13 +37,13 @@ Any technical decision not documented here should default to the simplest option
 | Share-sheet — iOS | `expo-share-extension` (custom mini-view) | Only path to a Pinterest-style in-share-sheet toast on iOS |
 | Share-sheet — Android | `expo-share-intent` + native Toast | Simplest cross-platform hook, native Toast for silent save UX |
 | State mgmt | React Query (TanStack) + Zustand | RQ for server state, Zustand for UI-only state |
-| Auth | Firebase Auth (Google, Apple, Email) | Solved auth; Expo has first-class support |
+| Auth | **Supabase Auth** (Google, Apple, Email) — JWT-based | One vendor for auth + DB + storage; Expo has first-class Supabase support via `@supabase/supabase-js` |
 | Push | Expo Notifications (APNs + FCM under the hood) | One integration for both platforms |
 | Backend API | Python 3.12, FastAPI, `pydantic v2`, `uvicorn` | Async-first, MVP proven, best-in-class for LLM/RAG orchestration |
 | Queue | Google Cloud Tasks | Managed, no ops, scales to zero, integrates with Cloud Run |
 | Workers | Same FastAPI codebase running in `worker` mode, deployed as a separate Cloud Run service | Same codebase, same models, different entry point |
-| Metadata store | Cloud SQL Postgres 16 | Relational, transactional, supports pgvector as fallback vector backend |
-| Object storage | Google Cloud Storage | Thumbnails, transient media, IG export tmpfs handoff |
+| Metadata store | **Supabase Postgres 15** (managed, with RLS) | Bundled with Auth; RLS gives free per-user isolation at the DB layer; supports pgvector as fallback vector backend |
+| Object storage | **Supabase Storage** (S3-compatible) | Bundled with Auth; RLS policies apply to buckets too; signed URLs for client fetches |
 | Memory / RAG | Cognee Cloud (Developer tier) behind our `MemoryStore` interface | Fastest to ship; OSS adapter as escape hatch |
 | Multimodal LLM | Gemini 2.5 Flash-Lite / Flash / Pro (migrating to Gemini 3.x pre-Oct 2026) | One provider for video + audio + image + summary |
 | ASR fallback (long audio) | Groq Whisper-v3-turbo | Cheapest ASR for content ≥ 5 min |
@@ -52,7 +52,7 @@ Any technical decision not documented here should default to the simplest option
 | Extractor — images | gallery-dl (Python subprocess in worker) | IG carousels / X image threads |
 | Media processing | ffmpeg (system binary in worker container) | Thumbnails, frame sampling, audio extraction |
 | IG export parser | BeautifulSoup4 + lxml | HTML export from Meta |
-| Deployment | GCP: Cloud Run (API + workers), Cloud Tasks, Cloud SQL, GCS, GKE Autopilot (Cobalt), Firebase Auth | Native fit for Firebase Auth + Gemini quotas |
+| Deployment | GCP: Cloud Run (API + workers), Cloud Tasks, GKE Autopilot (Cobalt) + Supabase Cloud (Auth, Postgres, Storage) | Two vendors: GCP for compute + queues near Gemini, Supabase for stateful data. Drops Cloud SQL (~$70/mo min) and GCS (per-op billing) in favor of Supabase's flat pricing. |
 | CI/CD | GitHub Actions → EAS Build/Submit + gcloud deploy | Standard, cheap |
 | Observability | Cloud Logging + Cloud Trace + Sentry (mobile + backend) | Managed + best-in-class error monitoring |
 | Analytics | PostHog (self-host later, cloud v1) | Product analytics + feature flags |
@@ -98,11 +98,11 @@ Rationale: mobile + backend evolve together; single-repo minimizes coordination 
 
 ### 5.2 Auth flow
 
-- Firebase JS SDK on the client.
-- Sign-in via `@react-native-firebase/auth` config plugin (or `firebase/auth/react-native` for Expo).
-- ID token attached to every backend request as `Authorization: Bearer <token>`. Token refresh handled by Firebase SDK; backend verifies token cryptographically via Firebase Admin SDK on every request.
-- Refresh token persisted in `expo-secure-store` (Keychain / Keystore).
-- Shared with iOS Share Extension via App Group (`group.com.spillthereel.shared`) and with Android share intent via Encrypted SharedPreferences.
+- `@supabase/supabase-js` on the client — one dependency covers auth + DB + storage.
+- Sign-in via `supabase.auth.signInWithOAuth({ provider: 'google' | 'apple' })` (opens native OAuth flow via `expo-web-browser` + `expo-auth-session`) or `signInWithPassword` for email.
+- Access token (JWT, 1h TTL) attached to every backend request as `Authorization: Bearer <token>`. Token refresh handled automatically by the Supabase JS client; backend verifies the JWT signature offline using the shared `SUPABASE_JWT_SECRET` (no network round-trip per request).
+- Session (access + refresh tokens) persisted in `expo-secure-store` (Keychain / Keystore) via the Supabase client's custom storage adapter.
+- Shared with iOS Share Extension via App Group (`group.com.spillthereel.shared`) and with Android share intent via Encrypted SharedPreferences. The share extension bundles a lightweight helper that reads the current access token and, if expired, calls Supabase's token-refresh endpoint directly (~200ms) before POSTing to `/v1/saves`.
 
 ### 5.3 Share extension — iOS
 
@@ -185,11 +185,15 @@ interface Collection {
 
 ### 6.2 Auth middleware
 
-Every route below `/v1/` requires `Authorization: Bearer <Firebase ID token>`. Middleware:
+Every route below `/v1/` requires `Authorization: Bearer <Supabase JWT>`. Middleware:
 1. Extracts token.
-2. Verifies via `firebase_admin.auth.verify_id_token()` (cached certificates, ~1ms per verify after warmup).
-3. Injects `current_user: User` into request state.
-4. Rejects with 401 on invalid.
+2. Verifies via `jwt.decode(token, SUPABASE_JWT_SECRET, algorithms=["HS256"], audience="authenticated")` using `PyJWT` — pure offline signature check, ~1µs per verify (no network).
+3. Extracts `sub` claim = the Supabase user UUID; this IS our `users.id` (see §9 — we adopt Supabase's `auth.users(id)` as the PK, no ULID indirection).
+4. On first request from a new UUID, upserts a `profiles` row (display_name, avatar_url, etc — the Supabase-idiom side table for custom user fields, since `auth.users` is minimal by design).
+5. Injects `current_user: User` into request state.
+6. Rejects with 401 on invalid signature / expired / audience mismatch.
+
+**Defense-in-depth:** the middleware also sets `session.execute("SET request.jwt.claim.sub = :sub")` at the start of each transaction so that Supabase's RLS policies fire naturally on every query — even if a handler forgets a `WHERE user_id = ...` filter, RLS blocks cross-user access at the DB layer.
 
 ### 6.3 REST endpoints (v1)
 
@@ -592,24 +596,49 @@ Gemini pass at ingest time to avoid a second round-trip.
 
 ---
 
-## 9. Data Model — Postgres Schema
+## 9. Data Model — Supabase Postgres Schema
 
-Primary keys are ULIDs. All tables have `created_at`, `updated_at`. All FK constraints named. RLS is not used (application-level user scoping); every query includes `WHERE user_id = :current_user_id`.
+**Isolation model:** every user-scoped table has `ENABLE ROW LEVEL SECURITY` with policies that check `auth.uid() = user_id`. This is defense-in-depth alongside the application-level `WHERE user_id = ...` filters — if a handler ever forgets to scope, RLS still blocks cross-user access.
+
+**Identity model:** the `user_id` on every table is the Supabase `auth.users(id)` UUID directly — no ULID indirection, no separate mapping table. `ON DELETE CASCADE` from `auth.users` gives us free account-deletion cleanup for everything except Cognee and Storage buckets (those cascade via our worker).
+
+Content-item primary keys remain ULIDs (they're generated by our backend and need lexicographic sort by creation time). Only `user_id` values change from ULID to UUID.
 
 ```sql
-CREATE TABLE users (
-  id          TEXT PRIMARY KEY,       -- ULID; NOT Firebase UID
-  firebase_uid TEXT UNIQUE NOT NULL,
-  email       TEXT,
+-- ---------------------------------------------------------------
+-- users table: we do NOT create one. Supabase provides `auth.users`
+-- automatically. For custom fields we use a `profiles` table keyed
+-- by the same UUID — the Supabase-idiom pattern.
+-- ---------------------------------------------------------------
+CREATE TABLE profiles (
+  id           UUID PRIMARY KEY REFERENCES auth.users(id) ON DELETE CASCADE,
   display_name TEXT,
-  created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
-  updated_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
-  deleted_at  TIMESTAMPTZ
+  avatar_url   TEXT,
+  created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+  deleted_at   TIMESTAMPTZ  -- soft-delete flag; hard-delete cascades via auth.users
 );
 
+ALTER TABLE profiles ENABLE ROW LEVEL SECURITY;
+CREATE POLICY profiles_select_own ON profiles FOR SELECT USING (auth.uid() = id);
+CREATE POLICY profiles_update_own ON profiles FOR UPDATE USING (auth.uid() = id);
+
+-- Auto-create profile row on new signup (Supabase trigger idiom):
+CREATE OR REPLACE FUNCTION public.handle_new_user() RETURNS trigger AS $$
+BEGIN
+  INSERT INTO public.profiles (id, display_name)
+  VALUES (NEW.id, NEW.raw_user_meta_data->>'full_name');
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
+
+CREATE TRIGGER on_auth_user_created
+  AFTER INSERT ON auth.users
+  FOR EACH ROW EXECUTE FUNCTION public.handle_new_user();
+
 CREATE TABLE items (
-  id                TEXT PRIMARY KEY,
-  user_id           TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  id                TEXT PRIMARY KEY,           -- ULID (backend-generated, sortable)
+  user_id           UUID NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
   source_url        TEXT NOT NULL,
   source_url_norm   TEXT NOT NULL,     -- normalized (strip query params, lowercase host)
   platform          TEXT NOT NULL,
@@ -624,8 +653,6 @@ CREATE TABLE items (
   owner_name        TEXT,
   owner_username    TEXT,
   owner_url         TEXT,
-  category          TEXT,
-  user_category     TEXT,
   duration_seconds  REAL,
   thumbnail_url     TEXT,
   failure_reason    TEXT,
@@ -640,12 +667,22 @@ CREATE TABLE items (
 
 CREATE INDEX items_user_saved_at_idx  ON items(user_id, saved_at DESC);
 CREATE INDEX items_user_platform_idx  ON items(user_id, platform);
-CREATE INDEX items_user_category_idx  ON items(user_id, category);
 CREATE INDEX items_user_state_idx     ON items(user_id, state);
+
+ALTER TABLE items ENABLE ROW LEVEL SECURITY;
+CREATE POLICY items_select_own ON items FOR SELECT USING (auth.uid() = user_id);
+CREATE POLICY items_insert_own ON items FOR INSERT WITH CHECK (auth.uid() = user_id);
+CREATE POLICY items_update_own ON items FOR UPDATE USING (auth.uid() = user_id);
+CREATE POLICY items_delete_own ON items FOR DELETE USING (auth.uid() = user_id);
+
+-- The backend's service-role key bypasses these policies (for worker
+-- inserts during ingestion). RLS only ever fires under the anon/user
+-- role — so the app-level `WHERE user_id = ...` filters remain
+-- mandatory for any code path running under service_role.
 
 CREATE TABLE collections (
   id          TEXT PRIMARY KEY,
-  user_id     TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  user_id     UUID NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
   name        TEXT NOT NULL,
   privacy     TEXT NOT NULL,
   source      TEXT NOT NULL,          -- 'instagram_import' | 'user_created'
@@ -653,6 +690,8 @@ CREATE TABLE collections (
   updated_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
   CONSTRAINT collections_user_name_unique UNIQUE (user_id, name)
 );
+ALTER TABLE collections ENABLE ROW LEVEL SECURITY;
+CREATE POLICY collections_all_own ON collections FOR ALL USING (auth.uid() = user_id) WITH CHECK (auth.uid() = user_id);
 
 CREATE TABLE collection_items (
   collection_id TEXT NOT NULL REFERENCES collections(id) ON DELETE CASCADE,
@@ -660,10 +699,15 @@ CREATE TABLE collection_items (
   added_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
   PRIMARY KEY (collection_id, item_id)
 );
+ALTER TABLE collection_items ENABLE ROW LEVEL SECURITY;
+-- Access via join to collections (which already carries user_id):
+CREATE POLICY collection_items_via_collection ON collection_items FOR ALL
+  USING (EXISTS (SELECT 1 FROM collections c WHERE c.id = collection_id AND c.user_id = auth.uid()))
+  WITH CHECK (EXISTS (SELECT 1 FROM collections c WHERE c.id = collection_id AND c.user_id = auth.uid()));
 
 CREATE TABLE imports (
   id                   TEXT PRIMARY KEY,
-  user_id              TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  user_id              UUID NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
   state                TEXT NOT NULL,  -- 'parsing' | 'indexing' | 'complete' | 'failed'
   total_parsed         INTEGER NOT NULL DEFAULT 0,
   text_indexed_done    INTEGER NOT NULL DEFAULT 0,
@@ -675,15 +719,19 @@ CREATE TABLE imports (
   finished_at          TIMESTAMPTZ,
   failure_reason       TEXT
 );
+ALTER TABLE imports ENABLE ROW LEVEL SECURITY;
+CREATE POLICY imports_all_own ON imports FOR ALL USING (auth.uid() = user_id) WITH CHECK (auth.uid() = user_id);
 
 CREATE TABLE saved_audio (
   id          TEXT PRIMARY KEY,
-  user_id     TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  user_id     UUID NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
   title       TEXT,
   artist      TEXT,
   saved_at    TIMESTAMPTZ,
   source_type TEXT NOT NULL             -- 'instagram_import'
 );
+ALTER TABLE saved_audio ENABLE ROW LEVEL SECURITY;
+CREATE POLICY saved_audio_all_own ON saved_audio FOR ALL USING (auth.uid() = user_id) WITH CHECK (auth.uid() = user_id);
 
 CREATE TABLE ingestion_events (
   id         TEXT PRIMARY KEY,
@@ -693,15 +741,23 @@ CREATE TABLE ingestion_events (
   detail     JSONB,
   at         TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+ALTER TABLE ingestion_events ENABLE ROW LEVEL SECURITY;
+CREATE POLICY ingestion_events_via_item ON ingestion_events FOR SELECT
+  USING (EXISTS (SELECT 1 FROM items i WHERE i.id = item_id AND i.user_id = auth.uid()));
+-- Inserts happen only from worker (service_role, bypasses RLS).
 
 CREATE TABLE push_tokens (
-  user_id     TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  user_id     UUID NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
   token       TEXT NOT NULL,
   platform    TEXT NOT NULL,           -- 'ios' | 'android'
   created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
   PRIMARY KEY (user_id, token)
 );
+ALTER TABLE push_tokens ENABLE ROW LEVEL SECURITY;
+CREATE POLICY push_tokens_all_own ON push_tokens FOR ALL USING (auth.uid() = user_id) WITH CHECK (auth.uid() = user_id);
 ```
+
+**Categories tables** (from §8b.2): `categories.user_id` and `item_categories` (joined via items) both get equivalent RLS policies — `USING (auth.uid() = user_id)` and `USING (EXISTS (SELECT 1 FROM items i WHERE i.id = item_id AND i.user_id = auth.uid()))` respectively.
 
 `ingestion_events` gives an append-only audit trail of state transitions — useful for debugging pipeline anomalies and for the SSE stream.
 
@@ -831,18 +887,17 @@ Per-extractor per-platform success rate is a first-class metric (§17).
 
 ### 13.1 Services
 
-| Service | Config | Notes |
-|---------|--------|-------|
-| Cloud Run — `api` | 1 vCPU, 512 MiB, min 1 max 20 instances, concurrency 80 | Public HTTPS via Cloud Load Balancer |
-| Cloud Run — `worker` | 2 vCPU, 2 GiB, min 0 max 30, concurrency 4 | Consumes Cloud Tasks |
-| Cloud Tasks | 3 queues: `ingest`, `import`, `enhance` | Per-queue rate limits & retry policies |
-| Cloud SQL Postgres 16 | Small instance (2 vCPU, 8 GiB) with HA | Private VPC access |
-| Cloud Storage | 1 bucket `spillthereel-media` with lifecycle rule (thumbnails cool after 30d) | Signed URLs for client fetches |
-| GKE Autopilot | Cobalt namespace, 2–10 pods | Same region as Cloud Run |
-| Secret Manager | Firebase creds, Gemini key, Groq key, Cobalt API key, Cognee API key | IAM-gated to Cloud Run service accounts |
-| VPC connector | Cloud Run ↔ Cloud SQL private IP | |
-| Firebase Auth | Google + Apple + Email providers | Free tier ample for v1 |
-| Cloud CDN | In front of GCS thumbnail URLs | Cache TTL 30d |
+| Service | Vendor | Config | Notes |
+|---------|--------|--------|-------|
+| Cloud Run — `api` | GCP | 1 vCPU, 512 MiB, min 1 max 20 instances, concurrency 80 | Public HTTPS via Cloud Load Balancer |
+| Cloud Run — `worker` | GCP | 2 vCPU, 2 GiB, min 0 max 30, concurrency 4 | Consumes Cloud Tasks |
+| Cloud Tasks | GCP | 3 queues: `ingest`, `import`, `enhance` | Per-queue rate limits & retry policies |
+| Postgres | **Supabase** | Pro tier ($25/mo flat, 8 GB, autoscaling storage) | Session-mode pooler on `:6543` for the API; direct on `:5432` for Alembic |
+| Object storage | **Supabase Storage** | 2 buckets: `media` (private, thumbnails), `exports` (private, GDPR JSON) | RLS-scoped; signed URLs for client fetches, 24h TTL for exports |
+| Auth | **Supabase Auth** | Google + Apple + Email providers | JWT signed with `SUPABASE_JWT_SECRET`; backend verifies offline |
+| GKE Autopilot | GCP | Cobalt namespace, 2–10 pods | Same region as Cloud Run |
+| Secret Manager | GCP | Supabase URL/anon/service-role/JWT secret, Gemini key, Groq key, Cobalt API key, Cognee API key | IAM-gated to Cloud Run service accounts |
+| Cloud CDN | GCP | In front of Supabase Storage signed URLs | Cache TTL 30d for thumbnails |
 
 ### 13.2 Environments
 
@@ -894,19 +949,23 @@ Terraform in `infra/terraform/`. State in GCS bucket with versioning. Modules pe
 
 ### 15.2 Auth
 
-- Firebase ID tokens (JWTs, RS256). Verified via `firebase_admin.auth.verify_id_token` — cached JWK certificates.
+- Supabase JWTs (HS256, signed with `SUPABASE_JWT_SECRET`). Verified offline via `PyJWT` — no network per request.
 - No custom session cookies. No CSRF concerns (Bearer tokens only, no cookie auth).
+- Refresh tokens live in the mobile keychain, never touch our backend.
 
-### 15.3 Authorization
+### 15.3 Authorization (defense-in-depth, three layers)
 
-- Every DB query includes `WHERE user_id = :current_user_id`.
-- Every Cognee call includes `dataset=f"user_{user_id}"`.
-- Every GCS signed URL scoped to the specific object.
+1. **Supabase Row-Level Security** — every user-scoped table has `ENABLE ROW LEVEL SECURITY` with `USING (auth.uid() = user_id)` policies. Fires when the connection uses the anon or authenticated JWT.
+2. **Application-level scoping** — every SQLAlchemy query still includes `WHERE user_id = :current_user_id`, because worker code connects with the service-role key (which bypasses RLS by design) and RLS alone would not catch a scoping bug there.
+3. **Cognee namespace** — every `MemoryStore.write()`/`search()` scopes to `dataset=f"user_{user_id}"`.
+
+Every Supabase Storage signed URL is scoped to the specific object; the bucket itself has RLS enabled so unsigned reads return 401.
 
 ### 15.4 Secrets
 
 - All API keys in Secret Manager, mounted to Cloud Run at boot via env var refs.
 - No secrets in code, `.env`, or CI. `.env.example` documents required var names only.
+- **Supabase secrets** (SECRET vs public labels): `SUPABASE_URL` — public; `SUPABASE_ANON_KEY` — public (RLS enforces safety, safe to ship in the mobile bundle); `SUPABASE_SERVICE_ROLE_KEY` — SECRET, backend-only, bypasses RLS; `SUPABASE_JWT_SECRET` — SECRET, backend-only, used for offline JWT verify.
 
 ### 15.5 Input validation
 
@@ -1017,6 +1076,7 @@ Custom metrics exported to Cloud Monitoring:
 - **Unit tests** (pytest, Jest) — pure functions, model methods, parser edge cases. Coverage target 80%.
 - **Integration tests** (pytest with docker-compose Postgres) — API endpoints against real DB.
 - **Contract tests** — mobile TS types generated from backend Pydantic schemas, kept in `packages/shared-types/`. CI enforces regeneration.
+- **RLS enforcement tests** — a dedicated pytest suite that, for every user-scoped table, spins up TWO test users, inserts rows as user A under the authenticated JWT, then attempts every CRUD op as user B and asserts each returns zero rows / permission-denied. Any regression that weakens a policy is caught here before the migration lands.
 - **Parser corpus tests** — a suite of anonymized IG export snippets covering every field variation observed. Any parser change re-runs the corpus.
 - **E2E tests (mobile)** — Detox on iOS + Android simulators, covering: sign-in, save-via-share, search, enhance flow.
 - **Ingestion smoke tests** — nightly against a fixed set of URLs across platforms.
@@ -1037,10 +1097,13 @@ Per-user monthly:
 - Gemini: 30 × $0.012 (share saves) + 200 × $0.012 (auto-enhance) + 10 × $0.003 (search synthesis) ≈ $2.79
 - Groq: negligible unless long-form YT
 - Cognee Cloud: prorated Developer-tier cost (start ~$0.05 / active user / month; will re-tier at growth)
-- GCS + Cloud Run + Cloud SQL: ~$0.15 / user / month at scale
+- Supabase Pro: $25/mo flat baseline + $0.125/GB storage over 100GB + $0.09/GB egress over 250GB — at expected v1 volumes ≈ $0.02 / user / month amortized
+- Cloud Run + Cloud Tasks: ~$0.10 / user / month at scale
 - Cobalt (GKE): ~$0.05 / user / month at scale
 
-**Total ≈ $3–4 per active user per month steady-state.** Free tier is sustainable up to ~10k active users on runway alone; monetization kicks in at 1–5 lakh users (per PRD §7).
+**Total ≈ $3 per active user per month steady-state.** Fixed baseline (Supabase Pro + GKE minimums) is ~$60/mo — sustainable free-tier up to ~15k active users on runway alone; monetization kicks in at 1–5 lakh users (per PRD §7).
+
+**Baseline savings from Supabase vs GCP-native:** Cloud SQL Postgres minimum ($70/mo for a 2-vCPU HA instance) + GCS ops billing + VPC connector complexity → all replaced by Supabase Pro at $25/mo flat with better DX (RLS, built-in auth, one dashboard).
 
 ---
 

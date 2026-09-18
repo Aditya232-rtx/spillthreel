@@ -246,7 +246,7 @@ Saves educational shorts (finance, science, coding, languages). Wants to build a
 **Sub-features:**
 
 - **F5.1 — Sign-in options.** Google Sign-In (mandatory), Apple Sign-In (mandatory for App Store approval), Email/password (fallback).
-- **F5.2 — Firebase Auth backend.** Tokens are issued and verified via Firebase Auth. Backend validates the Firebase ID token on every request.
+- **F5.2 — Supabase Auth backend.** Tokens are issued and verified via Supabase Auth (JWT-based). Backend validates the Supabase JWT on every request using the shared JWT secret (offline verify, ~1µs per request after warmup).
 - **F5.3 — Session persistence.** Refresh tokens stored in `expo-secure-store` (iOS Keychain / Android Keystore).
 - **F5.4 — Bulk import invitation (optional, dismissible, anytime).** Immediately after first sign-in, an onboarding card offers: *"Bring in your saved Instagram reels — takes 60 seconds."* Tapping it launches F8's guided flow.
   - The card has three equally-weighted actions: **Import now**, **Maybe later** (dismisses for this session), and **Skip forever** (never shown again on onboarding).
@@ -255,7 +255,7 @@ Saves educational shorts (finance, science, coding, languages). Wants to build a
   - Import is repeatable — the user can upload a fresh export ZIP at any time to backfill newer saves (F8.8 dedup handles this cleanly).
 - **F5.5 — Share-extension permission onboarding.** After sign-in (regardless of whether the user imported, skipped-for-now, or skipped-forever), an interactive 3-step guide shows the user how to trigger the share sheet from Instagram, how SpillTheReel appears, and confirms they've completed one test save before dismissing.
 - **F5.6 — Sign-out.** Full local wipe (SecureStore + async storage + query cache).
-- **F5.7 — Account deletion.** Required for App Store compliance. Deletes the user's Cognee namespace, Postgres rows, Cloud Storage bucket subfolder, and Firebase Auth user record.
+- **F5.7 — Account deletion.** Required for App Store compliance. Deletes the user's Cognee namespace, Supabase Postgres rows (RLS-scoped cascade), Supabase Storage bucket subfolder, and the Supabase Auth user record (which is the PK — a single `DELETE FROM auth.users` cascades everything else).
 - **F5.8 — Push notification permission.** Requested on first successful save ("We'll ping you when it's ready to search") — deferred permission ask, not on first launch.
 
 ---
@@ -397,8 +397,8 @@ Cost-control guardrails **while free tier is unlimited**:
 ### 8.3 Security & Privacy
 
 - All API traffic HTTPS/TLS 1.3.
-- Firebase ID tokens validated on every request.
-- Per-user data isolation enforced at Cognee namespace level AND Postgres row-level.
+- Supabase JWTs validated on every request.
+- Per-user data isolation enforced at THREE layers: (a) Supabase Postgres Row-Level Security policies, (b) Cognee per-user namespaces, (c) application-level `WHERE user_id = auth.uid()` filters as defense-in-depth. Every query passes all three checks.
 - Bulk-import ZIP is streamed to backend, parsed in-memory (or in an ephemeral tmpfs), and destroyed after processing. **Original ZIP is never persisted to durable storage.**
 - No sharing of user data with third parties beyond the LLM providers (Gemini, Groq) — and those receive only the media content the user explicitly submitted or imported.
 - No storage of user's IG/TikTok credentials — we never ask for them; we only accept public URLs from the share sheet and Meta-issued data exports.

@@ -1,0 +1,75 @@
+[project]
+name = "spillthereel-api"
+version = "0.1.0"
+description = "SpillTheReel backend — FastAPI + Cognee + Gemini pipeline"
+readme = "README.md"
+requires-python = ">=3.12"
+license = { text = "UNLICENSED" }
+
+dependencies = [
+  # Web framework
+  "fastapi>=0.115",
+  "uvicorn[standard]>=0.34",
+  "python-multipart>=0.0.9",
+  # Validation / config
+  "pydantic>=2.10",
+  "pydantic-settings>=2.6",
+  # Persistence
+  "sqlalchemy[asyncio]>=2.0.36",
+  "asyncpg>=0.30",
+  "alembic>=1.14",
+  "ulid-py>=1.1",
+  # Auth
+  "firebase-admin>=6.6",
+  # Observability
+  "structlog>=24.4",
+  "sentry-sdk[fastapi]>=2.19",
+  # HTTP client
+  "httpx>=0.28",
+  # Utilities
+  "python-dotenv>=1.0",
+]
+
+[project.optional-dependencies]
+worker = [
+  # LLM providers
+  "google-genai>=1.3",
+  "groq>=0.14",
+  # Memory layer
+  "cognee>=1.2",
+  # Media extraction (bundled in worker container only)
+  "yt-dlp>=2024.12.13",
+  "gallery-dl>=1.28",
+  # Parser
+  "beautifulsoup4>=4.12",
+  "lxml>=5.3",
+  # GCP
+  "google-cloud-tasks>=2.17",
+  "google-cloud-storage>=2.19",
+  "google-cloud-logging>=3.11",
+]
+dev = [
+  "pytest>=8.3",
+  "pytest-asyncio>=0.24",
+  "pytest-cov>=6.0",
+  "ruff>=0.8",
+  "mypy>=1.13",
+  "types-beautifulsoup4>=4.12",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "UP", "B", "SIM", "RUF"]
+ignore = ["E501"]  # line length handled by formatter
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+plugins = ["pydantic.mypy"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]

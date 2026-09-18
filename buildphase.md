@@ -40,14 +40,14 @@ Phases are numbered 0–7. Phase 0 is setup and can start immediately. Phases 1�
 
 - GitHub repo `spillthereel` with the monorepo structure from architecture.md §5.
 - Terraform for `dev` (local + minimal GCP) and `staging` environments.
-- Firebase project (staging + prod).
+- **Supabase projects (staging + prod)** with Auth, Postgres (RLS enabled), and Storage buckets `media` + `exports` provisioned. Google + Apple + Email providers configured. `SUPABASE_URL`, `SUPABASE_ANON_KEY`, `SUPABASE_SERVICE_ROLE_KEY`, `SUPABASE_JWT_SECRET`, `DATABASE_URL` (pooler `:6543`), `DATABASE_URL_DIRECT` (`:5432`) captured.
 - Cognee Cloud Developer account created; API key in Secret Manager (staging).
 - Gemini API key + Groq API key + Cobalt API key generated and stored in Secret Manager (staging).
 - Expo project initialized with EAS Build configured for iOS + Android.
 - FastAPI app skeleton with health endpoint deployed to Cloud Run staging.
 - GKE Autopilot cluster with Cobalt deployed (staging).
 - CI workflows for `mobile-ci`, `api-ci`, and Terraform plan.
-- Docker Compose local-dev setup that boots api, worker, postgres, and Cobalt.
+- Docker Compose local-dev setup that boots api + worker + local Postgres 15 (Supabase-compatible schema) + Cobalt.
 - Sentry projects (mobile + backend) linked.
 - PostHog project created; SDK wired into mobile app (event schema TBD).
 - Documentation: `README.md` at repo root with local dev instructions.
@@ -57,8 +57,8 @@ Phases are numbered 0–7. Phase 0 is setup and can start immediately. Phases 1�
 1. Create the monorepo skeleton (folders + placeholder README per subfolder).
 2. Init Expo app `apps/mobile/` with TypeScript strict, `expo-router`, Zustand, TanStack Query.
 3. Init FastAPI app `apps/api/` with Poetry / uv, pytest, ruff, mypy.
-4. Add Alembic + initial DB schema migration (Postgres users + items skeleton).
-5. Wire Firebase project + Firebase Admin SDK verification in FastAPI.
+4. Add Alembic + initial DB schema migration (`profiles` + `items` skeleton, RLS policies enabled).
+5. Wire Supabase project + JWT verification in FastAPI (`PyJWT` with `SUPABASE_JWT_SECRET`, HS256).
 6. Write `MemoryStore`, `Extractor`, `SummaryModel`, `TranscriptionModel` protocols as empty ABCs — no implementations yet.
 7. Add `apps/api/app/settings.py` with all env vars enumerated.
 8. Write Terraform modules: Cloud Run, Cloud SQL, GCS, Secret Manager, Cloud Tasks, VPC connector, GKE Autopilot for Cobalt.
@@ -84,6 +84,8 @@ Phases are numbered 0–7. Phase 0 is setup and can start immediately. Phases 1�
 - Apple Developer + Google Play Console accounts must exist and payments cleared. Non-trivial admin time — start this in parallel to Phase 0 day 1.
 - Bundle identifiers finalized (`com.spillthereel.app` etc.).
 - Cognee Cloud beta access confirmed; if unavailable, defer to Cognee OSS on Cloud Run (adds ~3 days).
+- Supabase Pro plan ($25/mo) enabled for staging + prod — free tier does not include PITR backups or the pooler-in-session-mode we rely on.
+- Google OAuth 2.0 Client + Apple Services ID uploaded to Supabase Auth → Providers.
 
 ---
 
@@ -489,6 +491,7 @@ Parallelizable with a second engineer: Phases 3 + 4 can run partially in paralle
 | 2026-09-10 | Cognee Cloud v1, OSS adapter behind interface | Fastest to ship, easy migration | Yes (adapter stub built day 1) |
 | 2026-09-10 | Gemini as unified multimodal | Simplest cost + latency profile | Yes (behind SummaryModel) |
 | 2026-09-10 | GCP + Firebase Auth | Fits Gemini quotas + auth already solved | Yes but expensive to switch |
+| 2026-09-18 | Swap Firebase Auth + Cloud SQL + GCS → Supabase (Auth + Postgres + Storage) | Single vendor for stateful layer; RLS gives free per-user isolation at DB layer; $25/mo flat vs $70+/mo Cloud SQL minimum saves ~$60/mo pre-scale; GCP kept for Cloud Run + Cloud Tasks + GKE (Gemini/Cognee latency, queue infra) | Reversible in principle but expensive — schema swap + auth-middleware rewrite. See TRD §9, §13.1, §15.3 for the new topology. |
 | 2026-09-10 | Cobalt self-hosted primary extractor | Purpose-built for social, no rate-limit dependency | Yes (behind Extractor) |
 | 2026-09-10 | No LinkedIn v1 | OSS extractors don't support; paid API deferred | v2 add-on |
 | 2026-09-10 | Freemium unlimited at launch | Prioritize adoption over monetization pre-scale | Revisit at 1–5 lakh users |
@@ -503,6 +506,7 @@ Parallelizable with a second engineer: Phases 3 + 4 can run partially in paralle
 - Google Play Console developer account.
 - Domain name (`spillthereel.app` or similar) purchased.
 - GCP billing account with a budget alarm.
+- **Supabase account + Pro-plan projects created (staging, prod), region locked (us-east-1 recommended), DB password stored in password manager.**
 - Cognee Cloud beta account confirmed.
 - Gemini API quota confirmed for expected volume.
 - Bundle identifiers reserved.
