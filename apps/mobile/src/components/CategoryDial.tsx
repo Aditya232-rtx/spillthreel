@@ -10,20 +10,24 @@ import Animated, {
 import { border, color, font } from '@/theme/tokens';
 import type { CategoryDef } from '@/data/categories';
 
-// Physics constants ported from the reference dial (SpillTheReel.dc.html):
-// 30 fixed slots cycling through the category list, laid out on a virtual
-// circle of `RADIUS` px so only a shallow ~64deg arc (2 * CULL) is ever
-// visible — reads as a rotating rolodex rather than a flat scroll list.
+// Physics constants ported verbatim from the reference dial
+// (SpillTheReel.dc.html): 30 fixed slots cycling through the category list,
+// laid out on a virtual circle of RADIUS px so only a shallow ~64deg arc
+// (2 * CULL) is ever visible — reads as a rotating rolodex rather than a
+// flat scroll list.
 const SLOT_COUNT = 30;
-const PITCH = 150; // "virtual px" of drag distance between adjacent slots
-const STEP_RAD = (12 * Math.PI) / 180; // angular spacing per slot
+const PITCH = 150;
+const STEP_RAD = (12 * Math.PI) / 180;
 const RADIUS = 900;
 const CULL_DEG = 32;
-const BASE_OFFSET = SLOT_COUNT * PITCH * 100; // arbitrary large start so early drags never approach 0
+const BASE_OFFSET = SLOT_COUNT * PITCH * 100;
 
 const CARD_HEIGHT = 104;
-const DIAL_HEIGHT = 460;
+const DIAL_HEIGHT = 520;
 const FADE_HEIGHT = 70;
+const CARD_LEFT_INSET = 36;
+const CARD_RIGHT_INSET = 36;
+const SHADOW_OFFSET = 5;
 
 interface DialCardGeometry {
   hiddenOpacity: number;
@@ -66,15 +70,32 @@ function DialCard({ slotIndex, category, offset, onPress }: DialCardProps) {
     };
   });
 
+  // transformOrigin: '0% 50%' pivots each card around its LEFT edge (not
+  // center). This is the signature detail that gives the dial its "swinging
+  // around a spindle on the left" rolodex feel — without it, the cards just
+  // tumble in place. Matches the reference's CSS transform-origin exactly.
   return (
-    <Animated.View style={[styles.card, { backgroundColor: category.bg }, animatedStyle]}>
-      <Pressable style={styles.cardPressable} onPress={() => onPress(category.id)}>
-        <View style={{ flex: 1, minWidth: 0, gap: 7 }}>
-          <Text style={[styles.cardName, { color: category.text }]}>{category.name}</Text>
-          <Text style={[styles.cardCount, { color: category.subText }]}>{category.count} REELS · AUTO-SORTED</Text>
-        </View>
-        <Image source={category.icon} style={styles.cardIcon} resizeMode="contain" />
-      </Pressable>
+    <Animated.View style={[styles.cardOuter, { transformOrigin: '0% 50%' }, animatedStyle]}>
+      {/* hard offset shadow backplate — sibling inside the transformed
+          wrapper so shadow rotates/scales with the card. */}
+      <View style={styles.shadowBackplate} />
+      <View style={[styles.card, { backgroundColor: category.bg }]}>
+        <Pressable style={styles.cardPressable} onPress={() => onPress(category.id)}>
+          <View style={styles.cardTextColumn}>
+            <Text style={[styles.cardName, { color: category.text }]}>{category.name}</Text>
+            <Text style={[styles.cardCount, { color: category.subText }]}>
+              {category.count} REELS · AUTO-SORTED
+            </Text>
+          </View>
+          {category.icon ? (
+            <Image source={category.icon} style={styles.cardIcon} resizeMode="contain" />
+          ) : category.emoji ? (
+            <View style={styles.emojiSlot}>
+              <Text style={styles.emojiText}>{category.emoji}</Text>
+            </View>
+          ) : null}
+        </Pressable>
+      </View>
     </Animated.View>
   );
 }
@@ -84,15 +105,6 @@ interface CategoryDialProps {
   onSelectCategory: (id: string) => void;
 }
 
-/**
- * The signature "categories dial": an infinitely-looping vertical carousel
- * of category cards laid out on a virtual circle. Drag to spin; momentum
- * carries it via Reanimated's withDecay. Ported from the reference's DOM
- * scroll-offset + imperative transform math (SpillTheReel.dc.html) onto
- * a single gesture-driven shared value — the per-card worklet already
- * wraps via modulo for any offset value, so unlike the DOM version there's
- * no need to periodically re-center a bounded scroll container.
- */
 export function CategoryDial({ categories, onSelectCategory }: CategoryDialProps) {
   const offset = useSharedValue(BASE_OFFSET);
   const dragStartOffset = useSharedValue(0);
@@ -130,13 +142,16 @@ export function CategoryDial({ categories, onSelectCategory }: CategoryDialProps
         </View>
       </GestureDetector>
 
+      {/* Fade colors match the categories page background (cream) so the
+          edges dissolve into the page. Approximates the reference's CSS
+          mask-image alpha punch-through. */}
       <LinearGradient
-        colors={[color.sage, `${color.sage}00`]}
+        colors={[color.cream, `${color.cream}00`]}
         style={[styles.fade, { top: 0, height: FADE_HEIGHT }]}
         pointerEvents="none"
       />
       <LinearGradient
-        colors={[`${color.sage}00`, color.sage]}
+        colors={[`${color.cream}00`, color.cream]}
         style={[styles.fade, { bottom: 0, height: FADE_HEIGHT }]}
         pointerEvents="none"
       />
@@ -148,6 +163,10 @@ const styles = StyleSheet.create({
   container: {
     height: DIAL_HEIGHT,
     position: 'relative',
+    // negative horizontal margin so the dial pokes into the screen's
+    // horizontal padding — cards are visually centered on the phone frame
+    // rather than inset by the Categories screen's 18px padding.
+    marginHorizontal: -18,
   },
   viewport: {
     flex: 1,
@@ -158,13 +177,25 @@ const styles = StyleSheet.create({
     left: 0,
     right: 0,
   },
-  card: {
+  cardOuter: {
     position: 'absolute',
-    left: 0,
-    right: 0,
+    left: CARD_LEFT_INSET,
+    right: CARD_RIGHT_INSET,
     top: '50%',
     marginTop: -CARD_HEIGHT / 2,
     height: CARD_HEIGHT,
+  },
+  shadowBackplate: {
+    position: 'absolute',
+    top: SHADOW_OFFSET,
+    left: SHADOW_OFFSET,
+    right: -SHADOW_OFFSET,
+    bottom: -SHADOW_OFFSET,
+    backgroundColor: color.ink,
+    borderRadius: 24,
+  },
+  card: {
+    flex: 1,
     borderRadius: 24,
     borderWidth: border.bold,
     borderColor: color.ink,
@@ -175,6 +206,12 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     gap: 14,
     paddingHorizontal: 16,
+    paddingVertical: 14,
+  },
+  cardTextColumn: {
+    flex: 1,
+    minWidth: 0,
+    gap: 7,
   },
   cardName: {
     fontFamily: font.display,
@@ -192,5 +229,15 @@ const styles = StyleSheet.create({
     width: 70,
     height: 70,
     flexShrink: 0,
+  },
+  emojiSlot: {
+    width: 70,
+    height: 70,
+    flexShrink: 0,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  emojiText: {
+    fontSize: 44,
   },
 });

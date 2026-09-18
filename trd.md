@@ -484,6 +484,114 @@ Cognee generates the embedding and indexes it. Search works immediately.
 
 ---
 
+## 8b. Categorization — Auto & User-Defined
+
+Categories are how users discover reels at a glance. They are produced two
+ways — auto-inferred by the ingestion pipeline, and user-defined via the
+"+ New Category" flow on the Categories screen — and both kinds share one
+`categories` table and one server-side classifier.
+
+### 8b.1 Sources
+
+| Source | Origin | Editable? |
+|---|---|---|
+| `auto` | Server infers from item metadata during ingest (F2.8) — a fixed canonical taxonomy: Recipes, Workouts, Travel, Fashion, Reading, Music, Tech, Comedy, Product, DIY, Finance, Other. | No — kept in sync with backend taxonomy. Rename maps to `user_alias`. |
+| `user` | User creates via `POST /v1/categories` — name + emoji. | Yes (rename, delete, reorder). |
+| `import` | Imported IG Collection (F8.6) — user's original folder name preserved. | Yes; behaves like a `user` category with `origin_id` set to the IG collection. |
+
+### 8b.2 Data model (extends §9 schema)
+
+```sql
+CREATE TABLE categories (
+  id            TEXT PRIMARY KEY,               -- ULID; slug for auto seeds ("recipes")
+  user_id       TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  name          TEXT NOT NULL,                  -- display name, uppercase in UI
+  source        TEXT NOT NULL,                  -- 'auto' | 'user' | 'import'
+  emoji         TEXT,                           -- user categories only
+  bg_color      TEXT NOT NULL,                  -- palette rotation for user/import
+  origin_id     TEXT,                           -- if source='import', IG collection id
+  centroid_id   TEXT,                           -- Cognee centroid embedding id (nullable)
+  created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+  CONSTRAINT categories_user_name_unique UNIQUE (user_id, name),
+  CONSTRAINT categories_source_valid CHECK (source IN ('auto','user','import'))
+);
+
+CREATE TABLE item_categories (
+  item_id     TEXT NOT NULL REFERENCES items(id) ON DELETE CASCADE,
+  category_id TEXT NOT NULL REFERENCES categories(id) ON DELETE CASCADE,
+  assigned_by TEXT NOT NULL,                    -- 'classifier' | 'user' | 'import'
+  confidence  REAL,                             -- 0..1 when assigned_by='classifier'
+  assigned_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  PRIMARY KEY (item_id, category_id)
+);
+CREATE INDEX item_categories_category_idx ON item_categories(category_id);
+```
+
+An item may belong to multiple categories. `assigned_by='user'` always
+wins over `'classifier'` for display ordering; user override never gets
+re-clobbered by a later re-classify pass.
+
+### 8b.3 Auto-categorization (ingest-time)
+
+Inside the ingestion pipeline (§7.1 step 6), immediately after the
+structured summary lands:
+
+1. Extract `summary.topics` (Gemini already returned these — see F2.5).
+2. Map topics → canonical taxonomy via a small classifier prompt that
+   receives `{title, summary, transcript_first_500_chars, hashtags,
+   caption_first_500_chars}` + the user's current category list (auto +
+   user + import). Gemini Flash-Lite returns `[{category_id, confidence}]`.
+3. Insert one `item_categories` row per suggestion with `confidence ≥ 0.55`;
+   ties broken by classifier ordering; cap at 2 category assignments per item
+   to keep the library legible.
+
+Cost: one Flash-Lite call per item (~$0.0005). Bundled into the existing
+Gemini pass at ingest time to avoid a second round-trip.
+
+### 8b.4 User-defined categories
+
+- `POST /v1/categories { name, emoji }` → creates a `user` category.
+- Server picks a `bg_color` by rotating through the palette (see
+  `USER_CATEGORY_PALETTE` in the mobile app) so the visual language stays
+  consistent — users don't pick colors.
+- On create, a **backfill classifier job** is enqueued
+  (`Cloud Task category_backfill{category_id}`) that runs the item corpus
+  against the new category and inserts `item_categories` rows for any
+  matches ≥ threshold. Throttled per user; SSE'd back to the client so
+  the count on the Categories dial rises live.
+- Delete cascades `item_categories` rows but preserves the items; items
+  simply lose that one assignment.
+- Rename does not re-run the classifier — the category id/embedding stays
+  stable. Only a category with a semantically different name (edit
+  distance > 30% of chars) triggers a re-classify prompt asking the user
+  whether they want the old rows unassigned.
+
+### 8b.5 API additions (extend §6.3)
+
+| Method | Path | Purpose |
+|---|---|---|
+| `GET` | `/v1/categories` | List all categories for the user (auto + user + import), with item counts |
+| `POST` | `/v1/categories` | Create a `user` category — body `{name, emoji}` |
+| `PATCH` | `/v1/categories/{id}` | Rename or reorder a user category |
+| `DELETE` | `/v1/categories/{id}` | Delete a user category |
+| `POST` | `/v1/items/{id}/categories` | User override: assign or remove categories |
+| `GET` | `/v1/categories/{id}/items` | Paginated items in a category |
+
+### 8b.6 Client contract
+
+- `useCategories()` (see `src/stores/categoriesStore.ts`) is a v1 shim
+  that reads/writes AsyncStorage locally so the Add-Category flow works
+  offline before the backend is live.
+- When the backend lands, the same hook signature switches its
+  `addCategory` implementation to a `POST /v1/categories` call and
+  hydrates its list from `GET /v1/categories`. Consumers don't change.
+- Seed categories (`SEED_CATEGORIES`) become a client-side default the
+  hook falls back to only if the server list is empty during first-launch
+  (before the user has ingested any content).
+
+---
+
 ## 9. Data Model — Postgres Schema
 
 Primary keys are ULIDs. All tables have `created_at`, `updated_at`. All FK constraints named. RLS is not used (application-level user scoping); every query includes `WHERE user_id = :current_user_id`.

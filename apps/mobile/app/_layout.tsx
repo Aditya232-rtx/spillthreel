@@ -10,20 +10,12 @@ SplashScreen.preventAutoHideAsync().catch(() => {
   // no-op: acceptable if called before native module is ready
 });
 
-// NOTE: Oswald-Variable.ttf is a variable font. React Native's native
-// renderer (iOS/Android) does not interpolate variable-font weight axes —
-// only Expo Web renders true per-weight boldness from a single variable
-// file. All "weights" below currently point at the same file as a
-// stopgap so nothing crashes. Before shipping, swap in static weight
-// files (Oswald-Bold.ttf, Oswald-SemiBold.ttf, Oswald-Medium.ttf —
-// free on Google Fonts) for correct native rendering.
-const OSWALD_VARIABLE = require('../assets/fonts/Oswald-Variable.ttf');
-
 export default function RootLayout() {
   const [fontsLoaded, fontError] = useFonts({
-    Oswald_700Bold: OSWALD_VARIABLE,
-    Oswald_600SemiBold: OSWALD_VARIABLE,
-    Oswald_500Medium: OSWALD_VARIABLE,
+    Oswald_700Bold: require('../assets/fonts/Oswald-Bold.ttf'),
+    Oswald_600SemiBold: require('../assets/fonts/Oswald-SemiBold.ttf'),
+    Oswald_500Medium: require('../assets/fonts/Oswald-Medium.ttf'),
+    Oswald_400Regular: require('../assets/fonts/Oswald-Regular.ttf'),
     MyLove: require('../assets/fonts/MyLove.otf'),
   });
 
