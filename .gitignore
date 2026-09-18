@@ -4,3 +4,25 @@ dist/
 web-build/
 *.log
 .DS_Store
+
+# Environment / secrets — never commit
+.env
+.env.local
+.env.*.local
+!.env.example
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+htmlcov/
+.coverage
+
+# Editor / OS
+.idea/
+.vscode/
+*.swp
