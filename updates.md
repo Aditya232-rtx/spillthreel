@@ -1,8 +1,8 @@
 # SpillTheReel — Build Updates & Punch List
 
-**Last updated:** 2026-09-18
+**Last updated:** 2026-09-19
 **Repo:** https://github.com/Aditya232-rtx/spillthreel
-**Latest commit:** `8aa3b9d` — feat(db): apply initial schema to Supabase Postgres
+**Latest commit:** _(pending)_ — feat(backend): Phase 1 ingest pipeline scaffolding + Storage buckets
 
 Living document. Keep this in the repo root, update on every session close.
 Structure per section: **✅ Done · 🟡 Needs improvement · 🔴 Missing · ⏳ Pending**.
@@ -101,7 +101,7 @@ Companion docs (contract-level, don't drift): [prd.md](./prd.md) · [trd.md](./t
 
 ### 🟡 Needs improvement
 
-- **Test coverage: 0%** — no unit or integration tests written yet.
+- **Test coverage: ~10%** — 16 unit tests covering platform_detect + extractor registry fallback semantics. Ingestion pipeline itself untested (needs mock fixtures for the four external services).
 - **OpenTelemetry tracing** — TRD §17.2 promises spans on every service call; not wired.
 - **Custom Cloud Monitoring metrics** — TRD §17.3 promises 8 histograms/gauges; not wired.
 - **Rate limiting** — TRD §14.1 promises 100 req/min per user; not wired.
@@ -109,20 +109,27 @@ Companion docs (contract-level, don't drift): [prd.md](./prd.md) · [trd.md](./t
 - The Alembic migration (`20260918_0001_initial.py`) and the pure-SQL script (`apply_initial_schema.sql`) are duplicated by hand — need a linter that alerts on drift.
 - **Health endpoint** returns hardcoded version; should read from a build-time env var.
 
-### 🔴 Missing (Phase 1 core work)
+### ✅ Done (Phase 1 core scaffolding — 2026-09-19)
 
-- **`services/extractors/cobalt.py`** — HTTP client to the self-hosted Cobalt instance.
-- **`services/extractors/ytdlp.py`** — fallback extractor.
+- **`services/extractors/cobalt.py`** — httpx client, streams from Cobalt tunnel URL to tmpfs.
+- **`services/extractors/ytdlp.py`** — lazy-imported yt-dlp, offloads to thread, captures uploader metadata.
+- **`services/extractors/registry.py`** — priority-ordered per-platform fallback (Cobalt → yt-dlp), distinguishes ExtractorError (walkable) from other exceptions (propagate).
+- **`services/media/ffmpeg.py`** — probe, sample_frames (1/2s default, 1/10s long-form branch, scale-cap 720p), extract_audio (16kHz mono WAV for Whisper), make_thumbnail (720w JPEG at duration midpoint).
+- **`services/media/supabase_storage.py`** — upload/signed_url/delete via Storage REST API with apikey + service-role auth.
+- **`services/llm/gemini.py`** — SummaryModel with structured output (JSON schema), Flash-Lite default, temp 0.3, multimodal (frames + audio) or transcript-only.
+- **`services/llm/groq_whisper.py`** — TranscriptionModel for the long-audio branch.
+- **`services/memory/cognee_cloud.py`** — full MemoryStore (write, write_batch, delete, search, similar, delete_namespace) via httpx REST.
+- **`services/ingest/pipeline.py`** — 11-step orchestrator matching architecture.md §4.1: state transitions with audit rows, short-txn DB helpers so ffmpeg/Gemini don't hold row locks, cleanup of tmpfs in finally.
+- **`app/tasks/worker_entry.py`** — /work/ingest live route; import/delete_user/category_backfill stub routes for Phase 2/3/4.
+- **`app/worker.py`** — dedicated worker ASGI entrypoint for the prod Cloud Run worker service.
+- **Local dispatcher** now actually calls `ingest_item` in dev.
+- **Tests**: `tests/unit/test_platform_detect.py` (9 platforms + 7 dedup cases) + `tests/unit/test_extractor_registry.py` (fallback + error-propagation semantics) + `tests/conftest.py` (env-var scaffolding).
+
+### 🔴 Missing (Phase 1 remainder)
+
 - **`services/extractors/gallerydl.py`** — image extractor for IG carousels + X threads.
-- **`services/extractors/registry.py`** — priority-ordered per-platform lookup.
-- **`services/media/ffmpeg.py`** — frame sampling, audio extraction, thumbnail generation.
-- **`services/media/supabase_storage.py`** — thumbnail upload with signed URL generation.
-- **`services/llm/gemini.py`** — SummaryModel impl calling Gemini 2.5 Flash-Lite with structured output.
-- **`services/llm/groq_whisper.py`** — TranscriptionModel impl for long-form audio.
-- **`services/memory/cognee_cloud.py`** — MemoryStore impl calling Cognee API.
-- **`services/memory/cognee_oss.py`** — escape-hatch stub.
-- **`services/ingest/pipeline.py`** — the main orchestrator (architecture.md §6).
-- **`services/ingest/taxonomy.py`** — canonical taxonomy + `decide_tier()` + `is_category_clear()`.
+- **`services/memory/cognee_oss.py`** — escape-hatch stub (only needed if Cognee Cloud outage forces a swap).
+- **`services/ingest/taxonomy.py`** — canonical taxonomy + `decide_tier()` + `is_category_clear()` (blocking for Phase 2 IG import).
 - **`services/search/retriever.py`** + **`services/search/answerer.py`** — search RAG loop.
 - **`/v1/search`** endpoint.
 - **`/v1/events`** SSE endpoint for item-state transitions.
@@ -133,10 +140,10 @@ Companion docs (contract-level, don't drift): [prd.md](./prd.md) · [trd.md](./t
 - **`services/imports/ig_pipeline.py`** — bulk import orchestrator.
 - **`/v1/import/instagram`** upload endpoint.
 - **`/v1/import/{id}`** progress endpoint.
-- **Worker entrypoint** (`app/worker.py`) — the ASGI app that Cloud Tasks POSTs to.
-- **Cloud Tasks HTTP push** — real GCP integration behind the current local-dispatcher shim (`tasks/enqueue.py:60`).
+- **Cloud Tasks HTTP push** — real GCP integration behind the current local-dispatcher shim.
 - **User deletion cascade worker** — task_type=`delete_user` (currently stub).
 - **Category backfill classifier worker** — task_type=`category_backfill` (currently stub).
+- **Integration test** for the full pipeline against live Gemini + Cognee (rate-limited).
 
 ### ⏳ Pending
 
@@ -158,10 +165,15 @@ Companion docs (contract-level, don't drift): [prd.md](./prd.md) · [trd.md](./t
 - **JWKS endpoint** returns ES256 signing key (kid `085f4960-ec07-487c-811f-c7568d7633d1`).
 - **Storage bucket names configured** in `.env` (`media`, `exports`) — buckets themselves need to be created via dashboard.
 
+### ✅ Done (2026-09-19 via Supabase MCP)
+
+- **Storage buckets** — `media` (private, 10 MB cap, image/jpeg|png|webp) and `exports` (private, 500 MB cap, application/json|zip) created.
+- **Storage RLS policies** — 8 policies (SELECT/INSERT/UPDATE/DELETE × 2 buckets) scoped to `(storage.foldername(name))[1] = auth.uid()::text`.
+- **`alembic_version` lockdown** — RLS enabled with no policies, so anon/authenticated see nothing (only service-role bypass reads/writes it).
+- Migration script committed at `apps/api/scripts/apply_0002_storage_and_lockdown.sql` for reproducibility.
+
 ### 🔴 Missing
 
-- **Supabase Storage buckets** — `media` and `exports` need to be created via the dashboard (Storage → New bucket → private).
-- **Storage RLS policies** — once buckets exist, policies to scope reads/writes to `auth.uid()::text = (storage.foldername(name))[1]`.
 - **OAuth providers** — Google + Apple + Email not yet configured in Supabase Auth → Providers.
 - **Google OAuth 2.0 Client ID + Secret** — need to create in Google Cloud Console, upload to Supabase.
 - **Apple Services ID + p8 key** — need to create in Apple Developer portal, upload to Supabase.
@@ -239,13 +251,14 @@ Companion docs (contract-level, don't drift): [prd.md](./prd.md) · [trd.md](./t
 
 In priority order. Session should pick up here:
 
-1. **Restart Claude Code session** in `/Users/adityajadhav/projects/spillthereelproduct` so the Supabase MCP tools hot-load. Verify `mcp__supabase__execute_sql` / `list_tables` / etc. appear.
-2. **Create Storage buckets** (`media`, `exports`) via the Supabase dashboard, then apply Storage RLS policies via MCP.
-3. **Configure Google + Apple + Email providers** in Supabase Auth → Providers.
-4. **Grab Gemini + Cognee API keys** and paste into `apps/api/.env`.
-5. **Boot the backend locally** — `cd apps/api && uv sync && uv run uvicorn app.main:app --reload`. Curl `/health`. Confirm the JWT verifier can hit the JWKS endpoint.
-6. **Wire Supabase JS on mobile** (`@supabase/supabase-js` + secure-store session adapter). One real auth round-trip validates the whole loop.
-7. **Start Phase 1 ingestion pipeline** — Cobalt extractor first (simplest impl, small blast radius), then Gemini, then Cognee, then the pipeline orchestrator.
+1. **Drop Gemini + Cognee + Groq API keys** into `apps/api/.env` — unblocks live pipeline testing.
+2. **`uv sync` in `apps/api/`** — install deps.
+3. **Boot the backend locally** — `uv run uvicorn app.main:app --reload`. Curl `/health`.
+4. **Manual smoke test** — mint a real Supabase JWT from the mobile app OR via `supabase auth` CLI; POST to `/v1/saves` with a real IG reel URL; watch the ingestion pipeline run end-to-end (Cobalt fetch → ffmpeg → Gemini → Cognee → thumbnail in Supabase Storage → item.state=fully_indexed).
+5. **Configure Google + Apple + Email providers** in Supabase Auth → Providers.
+6. **Wire Supabase JS on mobile** (`@supabase/supabase-js` + secure-store session adapter).
+7. **Build search RAG loop** — `services/search/retriever.py`, `services/search/answerer.py`, `/v1/search` endpoint.
+8. **Build IG import pipeline** (Phase 2) — `services/imports/ig_parser.py`, `ig_pipeline.py`, `/v1/import/instagram` endpoint.
 
 ---
 

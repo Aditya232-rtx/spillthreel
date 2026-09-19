@@ -23,6 +23,7 @@ from app.api import health
 from app.api.v1 import categories, items, saves, users
 from app.observability.logging import configure_logging, get_logger
 from app.settings import get_settings
+from app.tasks import worker_entry
 
 
 @asynccontextmanager
@@ -63,6 +64,13 @@ def create_app() -> FastAPI:
     app.include_router(items.router, prefix="/v1", tags=["items"])
     app.include_router(categories.router, prefix="/v1", tags=["categories"])
     app.include_router(users.router, prefix="/v1", tags=["users"])
+
+    # In dev, the worker routes share the api process so a single
+    # docker-compose service exercises the full pipeline. In prod they
+    # run as a separate Cloud Run service via app/worker.py.
+    settings = get_settings()
+    if settings.environment == "dev":
+        app.include_router(worker_entry.router)
 
     return app
 
