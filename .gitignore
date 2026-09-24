@@ -40,6 +40,10 @@ override.tf.json
 *_override.tf
 *_override.tf.json
 
+# Real-user IG export fixtures — personal data, never commit.
+# (Tests skip gracefully when absent; use synthetic fixtures instead.)
+apps/api/tests/parser-corpus/user_export_*.zip
+
 # Mobile signing & cloud service credentials — never commit
 google-services.json
 GoogleService-Info.plist
