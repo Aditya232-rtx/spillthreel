@@ -1,22 +1,83 @@
 import { useState } from 'react';
-import { Image, ScrollView, Text, View } from 'react-native';
+import { Image, Platform, ScrollView, Text, View } from 'react-native';
 import { useRouter } from 'expo-router';
 import { AmbientDot } from '@/components/AmbientDot';
 import { Badge } from '@/components/Badge';
 import { PillButton } from '@/components/PillButton';
 import { TextField } from '@/components/TextField';
+import { useAuth } from '@/hooks/useAuth';
+import { setOAuthNext } from '@/lib/oauth';
+import { supabase } from '@/lib/supabase';
 import { color, font, fontSize, space } from '@/theme/tokens';
 
 const LOGO_SOURCE = require('../../assets/images/logo-mark-transparent.png');
+const MIN_PASSWORD_LENGTH = 8;
 
 export default function SignupScreen() {
   const router = useRouter();
+  const { signUpWithPassword, signInWithOAuth } = useAuth();
   const [name, setName] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+  const [submitting, setSubmitting] = useState(false);
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [infoMessage, setInfoMessage] = useState<string | null>(null);
 
-  function handleContinue() {
-    router.push('/(import)/import1');
+  async function handleCreateAccount(): Promise<void> {
+    if (!email.trim() || password.length < MIN_PASSWORD_LENGTH) {
+      setErrorMessage(`Password needs at least ${MIN_PASSWORD_LENGTH} characters`);
+      return;
+    }
+    setSubmitting(true);
+    setErrorMessage(null);
+    setInfoMessage(null);
+    // Tell the AuthGate where this flow should land, so its redirect
+    // agrees with the manual one below even if it fires first.
+    await setOAuthNext('signup');
+    const { error, session } = await signUpWithPassword(email.trim(), password, name.trim() || undefined);
+    setSubmitting(false);
+    if (error) {
+      setErrorMessage(error.message);
+      return;
+    }
+    // Supabase may require email confirmation depending on project
+    // settings. Only advance to the import flow when we actually hold a
+    // session — otherwise the user would land in the app signed-out.
+    if (session) {
+      router.push('/(import)/import1');
+    } else {
+      setInfoMessage('Account created — check your email for a confirmation link, then log in.');
+    }
+  }
+
+  async function handleOAuth(provider: 'google' | 'apple'): Promise<void> {
+    setSubmitting(true);
+    setErrorMessage(null);
+    setInfoMessage(null);
+    const { error } = await signInWithOAuth(provider, 'signup');
+    setSubmitting(false);
+
+    if (error) {
+      if (error.name !== 'OAuthCancelled') {
+        setErrorMessage(error.message);
+      }
+      return;
+    }
+
+    if (Platform.OS === 'web') {
+      // Full-page redirect to Google is in flight; the AuthGate/index
+      // route takes over when the app reloads on return. See login.tsx.
+      return;
+    }
+
+    const { data } = await supabase.auth.getSession();
+    if (data?.session) {
+      router.push('/(import)/import1');
+    } else {
+      setErrorMessage(
+        'Sign-in did not complete — no session was created. Check your connection and try again.',
+      );
+    }
   }
 
   return (
@@ -56,8 +117,22 @@ export default function SignupScreen() {
         </Text>
 
         <View style={{ width: '100%', gap: space.sm - 1, marginTop: space.xs }}>
-          <PillButton label="Continue with Google" variant="outline" minHeight={46} fontSize={13.5} onPress={handleContinue} />
-          <PillButton label="Continue with Apple" variant="outline" minHeight={46} fontSize={13.5} onPress={handleContinue} />
+          <PillButton
+            label="Continue with Google"
+            variant="outline"
+            minHeight={46}
+            fontSize={13.5}
+            disabled={submitting}
+            onPress={() => handleOAuth('google')}
+          />
+          <PillButton
+            label="Continue with Apple"
+            variant="outline"
+            minHeight={46}
+            fontSize={13.5}
+            disabled={submitting}
+            onPress={() => handleOAuth('apple')}
+          />
 
           <View style={{ flexDirection: 'row', alignItems: 'center', gap: space.sm, marginVertical: space.xs }}>
             <View style={{ flex: 1, height: 1.5, backgroundColor: color.ink, opacity: 0.2 }} />
@@ -66,11 +141,43 @@ export default function SignupScreen() {
           </View>
 
           <TextField placeholder="Your name" value={name} onChangeText={setName} minHeight={46} />
-          <TextField placeholder="you@email.com" value={email} onChangeText={setEmail} autoCapitalize="none" keyboardType="email-address" minHeight={46} />
-          <TextField placeholder="8+ characters" value={password} onChangeText={setPassword} secureTextEntry minHeight={46} />
+          <TextField
+            placeholder="you@email.com"
+            value={email}
+            onChangeText={setEmail}
+            autoCapitalize="none"
+            keyboardType="email-address"
+            minHeight={46}
+          />
+          <TextField
+            placeholder="8+ characters"
+            value={password}
+            onChangeText={setPassword}
+            secureTextEntry
+            minHeight={46}
+          />
+
+          {errorMessage ? (
+            <Text style={{ fontFamily: font.body, fontSize: 12, color: color.coral, textAlign: 'center' }}>
+              {errorMessage}
+            </Text>
+          ) : null}
+          {infoMessage ? (
+            <Text style={{ fontFamily: font.body, fontSize: 12, color: color.ink, textAlign: 'center' }}>
+              {infoMessage}
+            </Text>
+          ) : null}
 
           <View style={{ marginTop: space.xs }}>
-            <PillButton label="Create account" variant="coral" minHeight={50} fontSize={15} shadowColor={color.ink} onPress={handleContinue} />
+            <PillButton
+              label={submitting ? 'Creating…' : 'Create account'}
+              variant="coral"
+              minHeight={50}
+              fontSize={15}
+              shadowColor={color.ink}
+              disabled={submitting}
+              onPress={handleCreateAccount}
+            />
           </View>
         </View>
 

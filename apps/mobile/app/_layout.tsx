@@ -1,14 +1,53 @@
 import { useEffect } from 'react';
 import { useFonts } from 'expo-font';
-import { Stack } from 'expo-router';
+import { Stack, useRouter, useSegments } from 'expo-router';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import * as SplashScreen from 'expo-splash-screen';
 import { StatusBar } from 'expo-status-bar';
+import { useAuth } from '@/hooks/useAuth';
+import { consumeOAuthNext } from '@/lib/oauth';
 
 SplashScreen.preventAutoHideAsync().catch(() => {
   // no-op: acceptable if called before native module is ready
 });
+
+/**
+ * Central auth gate. Without this, a user returning from the Google
+ * OAuth round-trip (web full-page redirect, or native deep link) holds
+ * a valid session but sits on whatever screen the redirect landed on —
+ * typically back at welcome/login with no onward navigation.
+ *
+ * Rules:
+ *   * signed in + on an (auth) screen  → home (login) or import (signup)
+ *   * signed out + on an (app)/(import) screen → welcome
+ * The login-vs-signup destination comes from the flag each auth handler
+ * stores before starting its flow (see setOAuthNext in lib/oauth.ts).
+ */
+function AuthGate() {
+  const { session, loading } = useAuth();
+  const segments = useSegments();
+  const router = useRouter();
+
+  useEffect(() => {
+    if (loading) {
+      return;
+    }
+    const group = segments[0];
+    const inAuth = group === '(auth)';
+    const inProtected = group === '(app)' || group === '(import)';
+
+    if (session && inAuth) {
+      consumeOAuthNext().then((next) => {
+        router.replace((next === 'signup' ? '/(import)/import1' : '/(app)/home') as never);
+      });
+    } else if (!session && inProtected) {
+      router.replace('/(auth)/welcome' as never);
+    }
+  }, [session, loading, segments, router]);
+
+  return null;
+}
 
 export default function RootLayout() {
   const [fontsLoaded, fontError] = useFonts({
@@ -35,6 +74,7 @@ export default function RootLayout() {
     <GestureHandlerRootView style={{ flex: 1 }}>
       <SafeAreaProvider>
         <StatusBar style="dark" />
+        <AuthGate />
         <Stack screenOptions={{ headerShown: false }} />
       </SafeAreaProvider>
     </GestureHandlerRootView>

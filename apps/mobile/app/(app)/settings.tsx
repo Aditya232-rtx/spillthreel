@@ -4,12 +4,14 @@ import { useRouter } from 'expo-router';
 import { PillButton } from '@/components/PillButton';
 import { SettingsRowView } from '@/components/SettingsRowView';
 import { DEFAULT_TOGGLE_STATE, SETTINGS_GROUPS } from '@/data/settings';
+import { useAuth } from '@/hooks/useAuth';
 import { border, color, font, radius, space } from '@/theme/tokens';
 
 const TOAST_DURATION_MS = 2200;
 
 export default function SettingsScreen() {
   const router = useRouter();
+  const { signOut } = useAuth();
   const [toggles, setToggles] = useState(DEFAULT_TOGGLE_STATE);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
@@ -30,7 +32,10 @@ export default function SettingsScreen() {
       return;
     }
     if (rowId === 'sign-out') {
-      router.replace('/(auth)/welcome');
+      // Fire-and-forget — the auth-state listener in useAuth flips
+      // session to null, and the auth gate in app/index.tsx will
+      // bounce the user back to Welcome on the next render.
+      void signOut().then(() => router.replace('/(auth)/welcome'));
       return;
     }
     if (['auto-delete', 'save-ready', 'weekly-digest', 'failed-saves'].includes(rowId)) {

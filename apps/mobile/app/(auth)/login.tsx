@@ -1,21 +1,78 @@
 import { useState } from 'react';
-import { Image, Pressable, ScrollView, Text, View } from 'react-native';
+import { Image, Platform, ScrollView, Text, View } from 'react-native';
 import { useRouter } from 'expo-router';
 import { AmbientDot } from '@/components/AmbientDot';
 import { Badge } from '@/components/Badge';
 import { PillButton } from '@/components/PillButton';
 import { TextField } from '@/components/TextField';
+import { useAuth } from '@/hooks/useAuth';
+import { setOAuthNext } from '@/lib/oauth';
+import { supabase } from '@/lib/supabase';
 import { color, font, fontSize, space } from '@/theme/tokens';
 
 const LOGO_SOURCE = require('../../assets/images/logo-mark-transparent.png');
 
 export default function LoginScreen() {
   const router = useRouter();
+  const { signInWithPassword, signInWithOAuth } = useAuth();
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+  const [submitting, setSubmitting] = useState(false);
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
-  function handleContinue() {
+  async function handlePasswordLogin(): Promise<void> {
+    if (!email.trim() || !password) {
+      setErrorMessage('Enter an email and password');
+      return;
+    }
+    setSubmitting(true);
+    setErrorMessage(null);
+    // Tell the AuthGate where this flow should land, so its redirect
+    // agrees with the manual one below even if it fires first.
+    await setOAuthNext('login');
+    const { error } = await signInWithPassword(email.trim(), password);
+    setSubmitting(false);
+    if (error) {
+      setErrorMessage(error.message);
+      return;
+    }
     router.replace('/(app)/home');
+  }
+
+  async function handleOAuth(provider: 'google' | 'apple'): Promise<void> {
+    setSubmitting(true);
+    setErrorMessage(null);
+    const { error } = await signInWithOAuth(provider, 'login');
+    setSubmitting(false);
+
+    if (error) {
+      // A true user-cancel stays quiet; everything else must be visible —
+      // silently staying on this screen is what made the broken redirect
+      // config look like "nothing happens".
+      if (error.name !== 'OAuthCancelled') {
+        setErrorMessage(error.message);
+      }
+      return;
+    }
+
+    if (Platform.OS === 'web') {
+      // No error on web means the full-page redirect to Google is in
+      // flight — this page is about to unload. A session cannot exist yet,
+      // so checking for one here would always fail and flash a bogus
+      // "no session" error. The AuthGate/index route takes over on return.
+      return;
+    }
+
+    const { data } = await supabase.auth.getSession();
+    if (data?.session) {
+      router.replace('/(app)/home');
+    } else {
+      // Native only: the in-app round-trip finished but produced no
+      // session (redirect never came back, or the exchange failed).
+      setErrorMessage(
+        'Sign-in did not complete — no session was created. Check your connection and try again.',
+      );
+    }
   }
 
   return (
@@ -54,8 +111,22 @@ export default function LoginScreen() {
         </Text>
 
         <View style={{ width: '100%', gap: space.sm, marginTop: space.sm }}>
-          <PillButton label="Continue with Google" variant="outline" minHeight={48} fontSize={14} onPress={handleContinue} />
-          <PillButton label="Continue with Apple" variant="outline" minHeight={48} fontSize={14} onPress={handleContinue} />
+          <PillButton
+            label="Continue with Google"
+            variant="outline"
+            minHeight={48}
+            fontSize={14}
+            disabled={submitting}
+            onPress={() => handleOAuth('google')}
+          />
+          <PillButton
+            label="Continue with Apple"
+            variant="outline"
+            minHeight={48}
+            fontSize={14}
+            disabled={submitting}
+            onPress={() => handleOAuth('apple')}
+          />
 
           <View style={{ flexDirection: 'row', alignItems: 'center', gap: space.sm, marginVertical: space.xs }}>
             <View style={{ flex: 1, height: 1.5, backgroundColor: color.ink, opacity: 0.2 }} />
@@ -70,8 +141,22 @@ export default function LoginScreen() {
             Forgot password?
           </Text>
 
+          {errorMessage ? (
+            <Text style={{ fontFamily: font.body, fontSize: 12, color: color.coral, textAlign: 'center' }}>
+              {errorMessage}
+            </Text>
+          ) : null}
+
           <View style={{ marginTop: space.xs }}>
-            <PillButton label="Log in" variant="coral" minHeight={50} fontSize={15} shadowColor={color.ink} onPress={handleContinue} />
+            <PillButton
+              label={submitting ? 'Signing in…' : 'Log in'}
+              variant="coral"
+              minHeight={50}
+              fontSize={15}
+              shadowColor={color.ink}
+              disabled={submitting}
+              onPress={handlePasswordLogin}
+            />
           </View>
         </View>
 
