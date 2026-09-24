@@ -17,9 +17,19 @@ import { createClient } from '@supabase/supabase-js';
 import * as SecureStore from 'expo-secure-store';
 import { AppState, Platform } from 'react-native';
 
-// Environment variables from EXPO_PUBLIC_* with fallbacks
-const SUPABASE_URL = process.env.EXPO_PUBLIC_SUPABASE_URL || 'https://fcefeiwvnzdfazwxdejy.supabase.co';
-const SUPABASE_PUBLISHABLE_KEY = process.env.EXPO_PUBLIC_SUPABASE_PUBLISHABLE_KEY || 'sb_publishable_4FkTQMYk7iPYoe-Q6yVzHA_4ngBhO1t';
+// Environment variables from EXPO_PUBLIC_* — no fallbacks. A missing env
+// var fails loudly at boot instead of silently pointing the app at a
+// real project's values baked into source (see .env.example).
+const SUPABASE_URL = process.env.EXPO_PUBLIC_SUPABASE_URL;
+const SUPABASE_PUBLISHABLE_KEY = process.env.EXPO_PUBLIC_SUPABASE_PUBLISHABLE_KEY;
+
+if (!SUPABASE_URL || !SUPABASE_PUBLISHABLE_KEY) {
+  throw new Error(
+    'Missing EXPO_PUBLIC_SUPABASE_URL or EXPO_PUBLIC_SUPABASE_PUBLISHABLE_KEY. ' +
+      'Copy apps/mobile/.env.example to apps/mobile/.env and fill in your ' +
+      'Supabase project values (Dashboard → Project Settings → API).',
+  );
+}
 
 /**
  * SecureStore-backed storage adapter for Supabase's auth session on native platforms,

@@ -1,8 +1,14 @@
 /**
  * OAuth helper — handles Google and Apple sign in using Supabase Auth
  * and Expo's WebBrowser / makeRedirectUri.
+ *
+ * Apple takes the native path on iOS (App Store Review Guideline 4.8:
+ * offering Google Sign-In means Sign In with Apple must be native, not
+ * a web view). Everywhere else Apple falls back to the web-OAuth flow.
  */
 import { makeRedirectUri } from 'expo-auth-session';
+import * as AppleAuthentication from 'expo-apple-authentication';
+import * as Crypto from 'expo-crypto';
 import * as WebBrowser from 'expo-web-browser';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Platform } from 'react-native';
@@ -11,6 +17,37 @@ import type { AuthError } from '@supabase/supabase-js';
 
 // Completes auth session for web / in-app web browser
 WebBrowser.maybeCompleteAuthSession();
+
+/** Dev-only logging — never print auth internals in release builds. */
+function oauthLog(...args: unknown[]): void {
+  if (__DEV__) {
+    console.log(...args);
+  }
+}
+
+function oauthWarn(...args: unknown[]): void {
+  if (__DEV__) {
+    console.warn(...args);
+  }
+}
+
+function oauthError(...args: unknown[]): void {
+  if (__DEV__) {
+    console.error(...args);
+  }
+}
+
+/**
+ * Strip tokens from a URL before logging. The implicit-flow callback can
+ * carry access_token/refresh_token in the fragment and the PKCE flow a
+ * one-time code in the query — all of which must never land in logs.
+ */
+export function sanitizeUrlForLog(url: string): string {
+  return url.replace(
+    /((?:access_token|refresh_token|id_token|code|token)=)[^&#]*/gi,
+    '$1[redacted]',
+  );
+}
 
 /**
  * Where to send the user after the OAuth round-trip completes.
@@ -51,14 +88,118 @@ export function buildOAuthRedirectUrl(): string {
   });
 }
 
+export function buildPasswordResetRedirectUrl(): string {
+  // Same registration rule as buildOAuthRedirectUrl: this URL MUST be
+  // whitelisted in Supabase Dashboard → Authentication → URL Configuration
+  // → Redirect URLs (see docs/oauth-setup.md), otherwise Supabase falls
+  // back to the Site URL and the recovery link never reaches the app.
+  if (Platform.OS === 'web') {
+    return `${window.location.origin}/auth/reset-password`;
+  }
+  return makeRedirectUri({
+    scheme: 'spillthereel',
+    path: 'auth/reset-password',
+  });
+}
+
+/**
+ * Native Sign In with Apple (iOS only), per Supabase's documented
+ * expo-apple-authentication pattern: SHA-256-hashed nonce to Apple,
+ * raw nonce + identity token to signInWithIdToken. Falls back to the
+ * web-OAuth flow when native Apple auth is unavailable.
+ */
+async function performNativeAppleSignIn(
+  next: 'login' | 'signup',
+): Promise<{ error: AuthError | null }> {
+  try {
+    const available = await AppleAuthentication.isAvailableAsync();
+    if (!available) {
+      oauthLog('[OAuth] Native Apple auth unavailable, falling back to web flow');
+      return performWebOAuthSignIn('apple', next);
+    }
+
+    const rawNonceBytes = await Crypto.getRandomBytesAsync(32);
+    const rawNonce = Array.from(rawNonceBytes)
+      .map((b) => b.toString(16).padStart(2, '0'))
+      .join('');
+    const hashedNonce = await Crypto.digestStringAsync(
+      Crypto.CryptoDigestAlgorithm.SHA256,
+      rawNonce,
+    );
+
+    const credential = await AppleAuthentication.signInAsync({
+      requestedScopes: [
+        AppleAuthentication.AppleAuthenticationScope.FULL_NAME,
+        AppleAuthentication.AppleAuthenticationScope.EMAIL,
+      ],
+      nonce: hashedNonce,
+    });
+
+    if (!credential.identityToken) {
+      return {
+        error: {
+          name: 'OAuthFailed',
+          message: 'Apple did not return an identity token',
+          status: 400,
+        } as AuthError,
+      };
+    }
+
+    await setOAuthNext(next);
+    const { error } = await supabase.auth.signInWithIdToken({
+      provider: 'apple',
+      token: credential.identityToken,
+      nonce: rawNonce,
+    });
+    return { error };
+  } catch (err: any) {
+    // Never log the error object itself — it can embed tokens.
+    oauthError('[OAuth] Native Apple sign-in failed');
+    if (err?.code === 'ERR_REQUEST_CANCELED') {
+      return {
+        error: {
+          name: 'OAuthCancelled',
+          message: 'Sign in was cancelled',
+          status: 400,
+        } as AuthError,
+      };
+    }
+    return {
+      error: {
+        name: 'OAuthException',
+        message: err?.message || 'Apple sign-in failed',
+        status: 500,
+      } as AuthError,
+    };
+  }
+}
+
 export async function performOAuthSignIn(
   provider: 'google' | 'apple',
   next: 'login' | 'signup' = 'login',
 ): Promise<{ error: AuthError | null }> {
+  if (provider === 'apple' && Platform.OS === 'ios') {
+    return performNativeAppleSignIn(next);
+  }
+  if (provider === 'apple') {
+    return performWebOAuthSignIn(provider, next);
+  }
+  return performWebOAuthSignIn(provider, next);
+}
+
+/**
+ * Browser-based OAuth: full-page redirect on web, in-app WebBrowser
+ * session on native. Used for Google everywhere and for Apple outside
+ * iOS (or when native Apple auth is unavailable).
+ */
+async function performWebOAuthSignIn(
+  provider: 'google' | 'apple',
+  next: 'login' | 'signup',
+): Promise<{ error: AuthError | null }> {
   try {
     if (Platform.OS === 'web') {
       const redirectUrl = typeof window !== 'undefined' ? `${window.location.origin}` : undefined;
-      console.log('[OAuth] Web redirectTo:', redirectUrl);
+      oauthLog('[OAuth] Web redirectTo:', redirectUrl);
       await setOAuthNext(next);
       const { data, error } = await supabase.auth.signInWithOAuth({
         provider,
@@ -67,10 +208,13 @@ export async function performOAuthSignIn(
         },
       });
       // supabase-js performs window.location.assign(data.url) itself here —
-      // this page is about to unload for Google. Log so a missing
-      // redirect (ad-blocker, CSP, suppressed navigation) is diagnosable
-      // from the browser console.
-      console.log('[OAuth] Web signInWithOAuth returned, auth URL:', data?.url ?? '(none)');
+      // this page is about to unload for the provider. Log (sanitized) so
+      // a missing redirect (ad-blocker, CSP, suppressed navigation) is
+      // diagnosable from the browser console.
+      oauthLog(
+        '[OAuth] Web signInWithOAuth returned, auth URL:',
+        data?.url ? sanitizeUrlForLog(data.url) : '(none)',
+      );
       return { error };
     }
 
@@ -88,7 +232,7 @@ export async function performOAuthSignIn(
     const redirectUrl = buildOAuthRedirectUrl();
     await setOAuthNext(next);
 
-    console.log('[OAuth] Native redirectUrl:', redirectUrl);
+    oauthLog('[OAuth] Native redirectUrl:', redirectUrl);
 
     const { data, error } = await supabase.auth.signInWithOAuth({
       provider,
@@ -99,7 +243,8 @@ export async function performOAuthSignIn(
     });
 
     if (error) {
-      console.error('[OAuth] Supabase signInWithOAuth error:', error);
+      // Log the message only — error objects can embed auth URLs/tokens.
+      oauthError('[OAuth] Supabase signInWithOAuth error:', error.message);
       return { error };
     }
 
@@ -113,7 +258,7 @@ export async function performOAuthSignIn(
       };
     }
 
-    console.log('[OAuth] Opening auth URL in WebBrowser:', data.url);
+    oauthLog('[OAuth] Opening auth URL in WebBrowser:', sanitizeUrlForLog(data.url));
 
     // Open in-app WebBrowser overlay to complete Google/Apple login
     const authResult = await WebBrowser.openAuthSessionAsync(data.url, redirectUrl);
@@ -124,7 +269,7 @@ export async function performOAuthSignIn(
       // best-effort
     }
 
-    console.log('[OAuth] WebBrowser result type:', authResult.type);
+    oauthLog('[OAuth] WebBrowser result type:', authResult.type);
 
     if (authResult.type === 'success' && authResult.url) {
       return await handleOAuthCallbackUrl(authResult.url);
@@ -154,7 +299,8 @@ export async function performOAuthSignIn(
       } as AuthError,
     };
   } catch (err: any) {
-    console.error('[OAuth] Exception in performOAuthSignIn:', err);
+    // Never log the error object itself — it can embed tokens/URLs.
+    oauthError('[OAuth] Exception in performWebOAuthSignIn');
     return {
       error: {
         name: 'OAuthException',
@@ -172,7 +318,7 @@ export async function handleOAuthCallbackUrl(
   url: string,
 ): Promise<{ error: AuthError | null }> {
   try {
-    console.log('[OAuth] Processing callback URL:', url);
+    oauthLog('[OAuth] Processing callback URL:', sanitizeUrlForLog(url));
     const params = parseUrlParams(url);
 
     if (params.access_token && params.refresh_token) {

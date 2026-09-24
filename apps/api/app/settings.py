@@ -115,6 +115,20 @@ class Settings(BaseSettings):
     per_user_daily_gemini_budget_usd: float = 0.50
     per_user_daily_gemini_hard_cap_usd: float = 1.00
 
+    # ---------------- Rate limiting (slowapi) ----------------
+    # slowapi limit strings, e.g. "60/minute". Read per-request (via a
+    # callable in app/ratelimit.py) so tests can tighten them with env
+    # overrides without rebuilding the app.
+    rate_limit_default: str = "60/minute"
+    rate_limit_saves: str = "10/minute"
+
+    # ---------------- CORS ----------------
+    # Comma-separated origins for staging/prod, e.g.
+    # "https://app.spillthereel.app,https://admin.spillthereel.app".
+    # Dev keeps "*" (see main.py). Required outside dev — boot fails
+    # fast if unset.
+    cors_allowed_origins: str = ""
+
     # ---------------- Derived helpers ----------------
     @property
     def supabase_jwks_url(self) -> str:

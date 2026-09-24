@@ -137,7 +137,10 @@ export default function LoginScreen() {
           <TextField placeholder="you@email.com" value={email} onChangeText={setEmail} autoCapitalize="none" keyboardType="email-address" />
           <TextField placeholder="password" value={password} onChangeText={setPassword} secureTextEntry />
 
-          <Text style={{ width: '100%', textAlign: 'right', fontFamily: font.body, fontSize: 12, color: color.ink, textDecorationLine: 'underline' }}>
+          <Text
+            onPress={() => router.push('/(auth)/forgot-password')}
+            style={{ width: '100%', textAlign: 'right', fontFamily: font.body, fontSize: 12, color: color.ink, textDecorationLine: 'underline' }}
+          >
             Forgot password?
           </Text>
 

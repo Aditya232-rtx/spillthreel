@@ -21,6 +21,9 @@ SplashScreen.preventAutoHideAsync().catch(() => {
  * Rules:
  *   * signed in + on an (auth) screen  → home (login) or import (signup)
  *   * signed out + on an (app)/(import) screen → welcome
+ *   * auth/reset-password is exempt from the first rule: arriving from a
+ *     recovery link creates a recovery session, and redirecting to home
+ *     would strand the user before they set a new password.
  * The login-vs-signup destination comes from the flag each auth handler
  * stores before starting its flow (see setOAuthNext in lib/oauth.ts).
  */
@@ -36,8 +39,11 @@ function AuthGate() {
     const group = segments[0];
     const inAuth = group === '(auth)';
     const inProtected = group === '(app)' || group === '(import)';
+    // Recovery-link landing screen manages its own routing (it needs the
+    // recovery session to stay put while the user sets a new password).
+    const onResetPassword = group === 'auth' && segments[1] === 'reset-password';
 
-    if (session && inAuth) {
+    if (session && inAuth && !onResetPassword) {
       consumeOAuthNext().then((next) => {
         router.replace((next === 'signup' ? '/(import)/import1' : '/(app)/home') as never);
       });

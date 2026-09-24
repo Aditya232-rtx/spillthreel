@@ -5,9 +5,12 @@
  *   1. Prefix with API_BASE_URL.
  *   2. Attach the current Supabase JWT as `Authorization: Bearer …`.
  *   3. Parse JSON responses; surface API errors as thrown ApiErrors.
- *   4. Handle the "session expired" case by clearing local state (the
- *      Supabase JS client already tries to refresh; if we still get 401
- *      after refresh, we're truly signed out).
+ *   4. Centralized session-expiry handling: the Supabase JS client already
+ *      tries to refresh a stale access token; if the backend STILL answers
+ *      401, the session is dead (revoked, deleted user, rotated keys), so
+ *      sign out locally before re-throwing. useAuth's onAuthStateChange
+ *      subscription drives the AuthGate to /(auth)/welcome from there —
+ *      no per-screen 401 handling needed.
  *
  * All screens should call this via TanStack Query — never `fetch()` a
  * `/v1/…` URL directly. That keeps the token-attach logic in one place.
@@ -67,6 +70,16 @@ async function apiRequest<T>(path: string, options: RequestOptions = {}): Promis
   const payload = isJson ? await response.json() : await response.text();
 
   if (!response.ok) {
+    if (auth && response.status === 401) {
+      // Session is dead despite the client's refresh attempt — clear it
+      // so AuthGate routes to welcome instead of retrying forever.
+      // Best-effort: never mask the original API error if signOut throws.
+      try {
+        await supabase.auth.signOut();
+      } catch {
+        // no-op
+      }
+    }
     throw new ApiError(
       response.status,
       payload,

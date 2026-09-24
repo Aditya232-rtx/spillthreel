@@ -7,11 +7,11 @@ import { PillButton } from '@/components/PillButton';
 import { TextField } from '@/components/TextField';
 import { useAuth } from '@/hooks/useAuth';
 import { setOAuthNext } from '@/lib/oauth';
+import { validatePassword, validatePasswordMatch } from '@/lib/password';
 import { supabase } from '@/lib/supabase';
 import { color, font, fontSize, space } from '@/theme/tokens';
 
 const LOGO_SOURCE = require('../../assets/images/logo-mark-transparent.png');
-const MIN_PASSWORD_LENGTH = 8;
 
 export default function SignupScreen() {
   const router = useRouter();
@@ -19,13 +19,24 @@ export default function SignupScreen() {
   const [name, setName] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+  const [confirmPassword, setConfirmPassword] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [infoMessage, setInfoMessage] = useState<string | null>(null);
 
   async function handleCreateAccount(): Promise<void> {
-    if (!email.trim() || password.length < MIN_PASSWORD_LENGTH) {
-      setErrorMessage(`Password needs at least ${MIN_PASSWORD_LENGTH} characters`);
+    if (!email.trim()) {
+      setErrorMessage('Enter an email address');
+      return;
+    }
+    const strengthError = validatePassword(password);
+    if (strengthError) {
+      setErrorMessage(strengthError);
+      return;
+    }
+    const matchError = validatePasswordMatch(password, confirmPassword);
+    if (matchError) {
+      setErrorMessage(matchError);
       return;
     }
     setSubmitting(true);
@@ -150,12 +161,22 @@ export default function SignupScreen() {
             minHeight={46}
           />
           <TextField
-            placeholder="8+ characters"
+            placeholder="Password"
             value={password}
             onChangeText={setPassword}
             secureTextEntry
             minHeight={46}
           />
+          <TextField
+            placeholder="Confirm password"
+            value={confirmPassword}
+            onChangeText={setConfirmPassword}
+            secureTextEntry
+            minHeight={46}
+          />
+          <Text style={{ fontFamily: font.body, fontSize: 11, color: 'rgba(21,23,15,0.55)', textAlign: 'center' }}>
+            8+ characters, with at least one letter and one number.
+          </Text>
 
           {errorMessage ? (
             <Text style={{ fontFamily: font.body, fontSize: 12, color: color.coral, textAlign: 'center' }}>

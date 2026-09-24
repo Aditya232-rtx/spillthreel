@@ -29,6 +29,7 @@ dependencies = [
   "httpx>=0.28",
   # Utilities
   "python-dotenv>=1.0",
+  "slowapi>=0.1.10",
 ]
 
 [project.optional-dependencies]

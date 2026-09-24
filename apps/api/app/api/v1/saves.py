@@ -22,7 +22,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from typing import Literal
 
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter, HTTPException, Request, status
 from pydantic import AnyUrl, BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
@@ -31,6 +31,7 @@ from ulid import ULID
 from app.auth.middleware import CurrentUser, DbSession
 from app.db.models import Item
 from app.observability.logging import get_logger
+from app.ratelimit import limiter, saves_limit
 from app.services.ingest.platform_detect import (
     UnsupportedPlatformError,
     detect_platform,
@@ -59,7 +60,9 @@ class SaveResponse(BaseModel):
 
 
 @router.post("/saves", response_model=SaveResponse, status_code=status.HTTP_201_CREATED)
+@limiter.limit(saves_limit)
 async def create_save(
+    request: Request,
     body: SaveRequest,
     user: CurrentUser,
     session: DbSession,

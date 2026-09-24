@@ -90,11 +90,36 @@ Dashboard → Authentication → Providers → Apple:
 
 For the native iOS "Sign in with Apple" button (mandatory for App Store review if you offer any other 3rd-party sign-in like Google), we use `expo-apple-authentication` on device, then pass the returned identity token to `supabase.auth.signInWithIdToken({ provider: 'apple', token })`. This is a different code path from the web OAuth flow above — both need to work.
 
+**Implemented in code** (`src/lib/oauth.ts` → `performNativeAppleSignIn`, called automatically when provider is `apple` on iOS):
+- Availability check via `AppleAuthentication.isAvailableAsync()` — falls back to the web-OAuth flow where native Apple auth doesn't exist (simulators without Apple ID, etc.).
+- Fresh SHA-256-hashed nonce per attempt (`expo-crypto`): hashed nonce goes to `signInAsync()`, raw nonce + `identityToken` go to `signInWithIdToken()`.
+- User cancel (`ERR_REQUEST_CANCELED`) maps to the silent `OAuthCancelled` path, same as the browser flows.
+- Android and web keep the existing web-OAuth Apple flow — native Apple sign-in isn't available on those platforms.
+
+No extra dashboard step beyond §1–4 above; the same Apple provider config covers both paths.
+
+---
+
+## Redirect URL register (all deep links)
+
+Supabase Dashboard → Authentication → URL Configuration → Redirect URLs must whitelist every URL the app hands to Supabase as `redirectTo`, or Supabase falls back to the Site URL and the in-app flow silently dies (user picks an account, lands back with no session):
+
+| URL | Used by | Code ref |
+|---|---|---|
+| `spillthereel://auth/callback` | Native OAuth return (standalone builds) | `buildOAuthRedirectUrl()` in `src/lib/oauth.ts` |
+| `spillthereel://auth/reset-password` | Native password-recovery return | `buildPasswordResetRedirectUrl()` in `src/lib/oauth.ts` |
+| `exp://<lan-ip>:8081/--/auth/callback` | OAuth return under Expo Go (IP changes per network — copy from the `[OAuth] Native redirectUrl:` Metro log) | same |
+| `exp://<lan-ip>:8081/--/auth/reset-password` | Recovery return under Expo Go | same |
+| `http://localhost:8081` | Web OAuth (`redirectTo = window.location.origin`) | `performWebOAuthSignIn` |
+| `http://localhost:8081/auth/reset-password` | Web recovery return | `buildPasswordResetRedirectUrl` |
+
 ---
 
 ## Verification checklist (once configured)
 
 - [ ] Google: sign in via mobile → check `SELECT provider, count(*) FROM auth.identities GROUP BY provider;` shows `google | 1`.
 - [ ] Apple: same query shows `apple | 1`.
+- [ ] Apple on a real iOS device uses the native sheet (no in-app browser opens).
 - [ ] Backend `/v1/me` returns the correct user profile for both providers.
 - [ ] Supabase Dashboard → Authentication → Users list shows the accounts with the correct provider badge.
+- [ ] Forgot-password: request link → open from email → set new password → lands signed in. Expired/used link shows "request a fresh one".

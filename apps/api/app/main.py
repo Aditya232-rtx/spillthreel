@@ -12,16 +12,22 @@ Run locally:
 
 from __future__ import annotations
 
-from contextlib import asynccontextmanager
 from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 
 import sentry_sdk
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from slowapi.errors import RateLimitExceeded
 
 from app.api import health
 from app.api.v1 import categories, items, saves, users
 from app.observability.logging import configure_logging, get_logger
+from app.ratelimit import (
+    DefaultRateLimitMiddleware,
+    limiter,
+    rate_limit_exceeded_handler,
+)
 from app.settings import get_settings
 from app.tasks import worker_entry
 
@@ -49,15 +55,37 @@ def create_app() -> FastAPI:
         lifespan=_lifespan,
     )
 
-    # CORS is intentionally permissive during dev — Cloud Load Balancer
-    # will front prod and only surface the mobile bundle's origin.
+    settings = get_settings()
+
+    # CORS: permissive only in dev. Outside dev the allowed origins must
+    # be explicit via CORS_ALLOWED_ORIGINS — fail fast if unset, so a
+    # misconfigured staging/prod deploy never boots wide open.
+    if settings.environment == "dev":
+        allow_origins = ["*"]
+    else:
+        allow_origins = [
+            origin.strip()
+            for origin in settings.cors_allowed_origins.split(",")
+            if origin.strip()
+        ]
+        if not allow_origins:
+            raise RuntimeError(
+                "CORS_ALLOWED_ORIGINS must be set when ENVIRONMENT is "
+                f"{settings.environment!r}"
+            )
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=["*"],
+        allow_origins=allow_origins,
         allow_credentials=False,
         allow_methods=["*"],
         allow_headers=["*"],
     )
+
+    # Rate limiting: default limit on every route via the middleware,
+    # stricter per-route decorators where set (e.g. POST /v1/saves).
+    app.state.limiter = limiter
+    app.add_exception_handler(RateLimitExceeded, rate_limit_exceeded_handler)  # type: ignore[arg-type]
+    app.add_middleware(DefaultRateLimitMiddleware)
 
     app.include_router(health.router)
     app.include_router(saves.router, prefix="/v1", tags=["saves"])
@@ -68,7 +96,6 @@ def create_app() -> FastAPI:
     # In dev, the worker routes share the api process so a single
     # docker-compose service exercises the full pipeline. In prod they
     # run as a separate Cloud Run service via app/worker.py.
-    settings = get_settings()
     if settings.environment == "dev":
         app.include_router(worker_entry.router)
 
