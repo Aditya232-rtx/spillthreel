@@ -7,6 +7,7 @@ web-build/
 
 # Environment / secrets — never commit
 .env
+.env.*
 .env.local
 .env.*.local
 !.env.example
@@ -26,3 +27,29 @@ htmlcov/
 .idea/
 .vscode/
 *.swp
+
+# Terraform (Phase 0+) — state and tfvars routinely contain secrets
+*.tfstate
+*.tfstate.*
+*.tfvars
+.terraform/
+.terraform.lock.hcl
+crash.log
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+
+# Mobile signing & cloud service credentials — never commit
+google-services.json
+GoogleService-Info.plist
+*.keystore
+credentials.json
+*-key.json
+service-account*.json
+*.p8
+*.p12
+*.jks
+*.key
+*.mobileprovision
+*.pem
