@@ -79,10 +79,19 @@ async def _current_user(
         await session.commit()
         await session.refresh(profile)
         _logger.info("auth.profile_created", user_id=user_id)
-    elif profile.deleted_at is not None:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN, detail="account deleted"
-        )
+    else:
+        if profile.deleted_at is not None:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN, detail="account deleted"
+            )
+        # Keep the DB mirror in sync with user_metadata: renames from
+        # signup / your-name / profile-edit / OAuth re-apply arrive here
+        # as claims on the next authenticated call. Only write when the
+        # value actually changed.
+        if display_name and profile.display_name != display_name:
+            profile.display_name = display_name
+            await session.commit()
+            _logger.info("auth.profile_renamed", user_id=user_id)
 
     return profile
 

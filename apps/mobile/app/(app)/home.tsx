@@ -1,18 +1,90 @@
+import { useEffect, useRef, useState } from 'react';
 import { Pressable, ScrollView, Text, View } from 'react-native';
 import { useRouter } from 'expo-router';
 import { Svg, Circle, Line } from 'react-native-svg';
 import { Shadowed } from '@/components/Shadowed';
 import { CHART_BARS, COLLECTION_RAILS, RECENT_THUMBS } from '@/data/homeData';
+import { useAuth } from '@/hooks/useAuth';
+import { getFirstName } from '@/lib/display-name';
+import {
+  dismissVerifyNotice,
+  getPendingEmail,
+  isVerifyDismissed,
+  resendConfirmation,
+} from '@/lib/verification';
 import { border, color, font, fontSize, radius, space } from '@/theme/tokens';
 
 export default function HomeScreen() {
   const router = useRouter();
+  const { user } = useAuth();
+  const firstName = getFirstName(user);
+  const initial = (firstName[0] ?? 'S').toUpperCase();
+
+  // Verify nudge: signed-in-but-unconfirmed users, or pending signups
+  // browsing without a session yet.
+  const [pendingEmail, setPendingEmailState] = useState<string | null>(null);
+  const needsVerify = (!!user && !user.email_confirmed_at) || (!user && !!pendingEmail);
+  const verifyEmail = user?.email ?? pendingEmail;
+  const [dismissed, setDismissed] = useState(false);
+  const [popupOpen, setPopupOpen] = useState(false);
+  const popupShownRef = useRef(false);
+  const [resendNote, setResendNote] = useState<string | null>(null);
+  const [resending, setResending] = useState(false);
+
+  useEffect(() => {
+    setDismissed(false);
+    setResendNote(null);
+    popupShownRef.current = false;
+    if (!user) {
+      getPendingEmail().then(setPendingEmailState);
+    } else {
+      setPendingEmailState(null);
+      if (!user.email_confirmed_at) {
+        isVerifyDismissed(user.id).then(setDismissed);
+      }
+    }
+  }, [user?.id, user?.email_confirmed_at]);
+
+  // Pop the notice at the profile icon on landing (once per mount).
+  useEffect(() => {
+    if (needsVerify && !dismissed && !popupShownRef.current) {
+      popupShownRef.current = true;
+      setPopupOpen(true);
+    }
+    if (!needsVerify) {
+      setPopupOpen(false);
+    }
+  }, [needsVerify, dismissed]);
+
+  async function handleDismiss(): Promise<void> {
+    setDismissed(true);
+    setPopupOpen(false);
+    if (user) {
+      await dismissVerifyNotice(user.id);
+    }
+  }
+
+  async function handleResend(): Promise<void> {
+    if (!verifyEmail || resending) return;
+    setResending(true);
+    const error = await resendConfirmation(verifyEmail);
+    setResending(false);
+    setResendNote(error ?? 'Fresh link sent — check your inbox.');
+  }
 
   return (
-    <ScrollView
-      style={{ flex: 1, backgroundColor: color.cream }}
-      contentContainerStyle={{ paddingHorizontal: space.xl, paddingTop: 54, paddingBottom: 130, gap: space.lg }}
-    >
+    <View style={{ flex: 1, backgroundColor: color.cream }}>
+      {/* Outside-tap catcher for the verify popup */}
+      {popupOpen ? (
+        <Pressable
+          onPress={() => setPopupOpen(false)}
+          style={{ position: 'absolute', top: 0, bottom: 0, left: 0, right: 0, zIndex: 20 }}
+        />
+      ) : null}
+      <ScrollView
+        style={{ flex: 1, backgroundColor: color.cream }}
+        contentContainerStyle={{ paddingHorizontal: space.xl, paddingTop: 54, paddingBottom: 130, gap: space.lg }}
+      >
       <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
         <Text
           style={{
@@ -23,7 +95,7 @@ export default function HomeScreen() {
             textTransform: 'uppercase',
           }}
         >
-          HEY,{'\n'}ADITYA.
+          HEY,{'\n'}{firstName}.
         </Text>
         <Pressable onPress={() => router.push('/(app)/profile')}>
           <Shadowed offset={3} shadowColor={color.coral} radius={radius.pill}>
@@ -39,11 +111,68 @@ export default function HomeScreen() {
                 justifyContent: 'center',
               }}
             >
-              <Text style={{ fontFamily: font.display, fontSize: 17, color: color.cream }}>A</Text>
+              <Text style={{ fontFamily: font.display, fontSize: 17, color: color.cream }}>{initial}</Text>
+              {needsVerify && !dismissed ? (
+                <View
+                  style={{
+                    position: 'absolute',
+                    top: -3,
+                    right: -3,
+                    width: 14,
+                    height: 14,
+                    borderRadius: 7,
+                    backgroundColor: color.coral,
+                    borderWidth: 2,
+                    borderColor: color.cream,
+                  }}
+                />
+              ) : null}
             </View>
           </Shadowed>
         </Pressable>
       </View>
+
+      {/* Verify popup anchored under the profile icon */}
+      {popupOpen && needsVerify && !dismissed ? (
+        <View
+          style={{
+            position: 'absolute',
+            top: 108,
+            right: space.xl,
+            width: 250,
+            backgroundColor: '#F6E3D3',
+            borderWidth: 2,
+            borderColor: color.ink,
+            borderRadius: radius.md,
+            padding: space.md,
+            gap: 6,
+            zIndex: 30,
+          }}
+        >
+          <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
+            <Text style={{ fontFamily: font.display, fontSize: 12.5, color: color.ink, textTransform: 'uppercase' }}>
+              Confirm your email
+            </Text>
+            <Pressable onPress={handleDismiss} accessibilityLabel="Dismiss">
+              <Text style={{ fontSize: 13, color: 'rgba(21,23,15,0.6)' }}>✕</Text>
+            </Pressable>
+          </View>
+          <Text style={{ fontFamily: font.body, fontSize: 12, lineHeight: 17, color: 'rgba(21,23,15,0.75)' }}>
+            Tap the link we sent to {verifyEmail} to unlock your library.
+          </Text>
+          <Text
+            onPress={handleResend}
+            style={{ fontFamily: font.body, fontSize: 12, color: color.coral, textDecorationLine: 'underline' }}
+          >
+            {resending ? 'Sending…' : 'Resend confirmation link'}
+          </Text>
+          {resendNote ? (
+            <Text style={{ fontFamily: font.body, fontSize: 11.5, color: 'rgba(21,23,15,0.7)' }}>
+              {resendNote}
+            </Text>
+          ) : null}
+        </View>
+      ) : null}
 
       <Pressable
         onPress={() => router.push('/(app)/chat')}
@@ -252,6 +381,7 @@ export default function HomeScreen() {
           </View>
         </Shadowed>
       ))}
-    </ScrollView>
+      </ScrollView>
+    </View>
   );
 }

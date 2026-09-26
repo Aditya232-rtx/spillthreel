@@ -28,6 +28,9 @@ htmlcov/
 .vscode/
 *.swp
 
+# Android emulator bugreports (adb) — device dumps, never commit
+bugreport-*.zip
+
 # Terraform (Phase 0+) — state and tfvars routinely contain secrets
 *.tfstate
 *.tfstate.*

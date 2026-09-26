@@ -57,7 +57,9 @@ export function sanitizeUrlForLog(url: string): string {
  */
 const OAUTH_NEXT_KEY = 'spillthereel.oauth_next';
 
-export async function setOAuthNext(next: 'login' | 'signup'): Promise<void> {
+export type OAuthNext = 'login' | 'signup' | 'name';
+
+export async function setOAuthNext(next: OAuthNext): Promise<void> {
   try {
     await AsyncStorage.setItem(OAUTH_NEXT_KEY, next);
   } catch {
@@ -65,23 +67,33 @@ export async function setOAuthNext(next: 'login' | 'signup'): Promise<void> {
   }
 }
 
-export async function consumeOAuthNext(): Promise<'login' | 'signup'> {
+export async function consumeOAuthNext(): Promise<OAuthNext> {
   try {
     const value = await AsyncStorage.getItem(OAUTH_NEXT_KEY);
     await AsyncStorage.removeItem(OAUTH_NEXT_KEY);
-    return value === 'signup' ? 'signup' : 'login';
+    if (value === 'signup' || value === 'name') {
+      return value;
+    }
+    return 'login';
   } catch {
     return 'login';
   }
 }
 
+/** Resolve a stored destination to its route. */
+export function routeForOAuthNext(next: OAuthNext): string {
+  if (next === 'signup') {
+    return '/(import)/import1';
+  }
+  if (next === 'name') {
+    return '/(auth)/your-name';
+  }
+  return '/(app)/home';
+}
+
 export function buildOAuthRedirectUrl(): string {
-  // Explicit scheme: spillthereel://auth/callback in standalone builds,
-  // exp://.../--/auth/callback under Expo Go. This URL MUST be whitelisted
-  // in Supabase Dashboard → Authentication → URL Configuration →
-  // Redirect URLs, otherwise Supabase falls back to the Site URL and the
-  // in-app browser never returns to the app (user picks a Google account
-  // then lands back on the login page with no session).
+  // Uses exp://.../--/auth/callback under Expo Go, or spillthereel://auth/callback in standalone builds.
+  // This URL MUST be whitelisted in Supabase Dashboard → Authentication → URL Configuration → Redirect URLs.
   return makeRedirectUri({
     scheme: 'spillthereel',
     path: 'auth/callback',
@@ -109,7 +121,7 @@ export function buildPasswordResetRedirectUrl(): string {
  * web-OAuth flow when native Apple auth is unavailable.
  */
 async function performNativeAppleSignIn(
-  next: 'login' | 'signup',
+  next: OAuthNext,
 ): Promise<{ error: AuthError | null }> {
   try {
     const available = await AppleAuthentication.isAvailableAsync();
@@ -176,7 +188,7 @@ async function performNativeAppleSignIn(
 
 export async function performOAuthSignIn(
   provider: 'google' | 'apple',
-  next: 'login' | 'signup' = 'login',
+  next: OAuthNext = 'login',
 ): Promise<{ error: AuthError | null }> {
   if (provider === 'apple' && Platform.OS === 'ios') {
     return performNativeAppleSignIn(next);
@@ -194,7 +206,7 @@ export async function performOAuthSignIn(
  */
 async function performWebOAuthSignIn(
   provider: 'google' | 'apple',
-  next: 'login' | 'signup',
+  next: OAuthNext,
 ): Promise<{ error: AuthError | null }> {
   try {
     if (Platform.OS === 'web') {

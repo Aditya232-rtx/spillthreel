@@ -6,8 +6,10 @@ import { Badge } from '@/components/Badge';
 import { PillButton } from '@/components/PillButton';
 import { TextField } from '@/components/TextField';
 import { useAuth } from '@/hooks/useAuth';
+import { rememberDisplayName } from '@/lib/display-name';
 import { setOAuthNext } from '@/lib/oauth';
 import { validatePassword, validatePasswordMatch } from '@/lib/password';
+import { setPendingEmail } from '@/lib/verification';
 import { supabase } from '@/lib/supabase';
 import { color, font, fontSize, space } from '@/theme/tokens';
 
@@ -22,11 +24,12 @@ export default function SignupScreen() {
   const [confirmPassword, setConfirmPassword] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [emailError, setEmailError] = useState<string | null>(null);
   const [infoMessage, setInfoMessage] = useState<string | null>(null);
 
   async function handleCreateAccount(): Promise<void> {
     if (!email.trim()) {
-      setErrorMessage('Enter an email address');
+      setEmailError('Enter an email address');
       return;
     }
     const strengthError = validatePassword(password);
@@ -41,31 +44,86 @@ export default function SignupScreen() {
     }
     setSubmitting(true);
     setErrorMessage(null);
+    setEmailError(null);
     setInfoMessage(null);
     // Tell the AuthGate where this flow should land, so its redirect
     // agrees with the manual one below even if it fires first.
     await setOAuthNext('signup');
-    const { error, session } = await signUpWithPassword(email.trim(), password, name.trim() || undefined);
-    setSubmitting(false);
+    const { error, session, user } = await signUpWithPassword(email.trim(), password, name.trim() || undefined);
     if (error) {
+      setSubmitting(false);
       setErrorMessage(error.message);
       return;
     }
-    // Supabase may require email confirmation depending on project
-    // settings. Only advance to the import flow when we actually hold a
-    // session — otherwise the user would land in the app signed-out.
+    // Session in hand — fresh account, straight into the app.
     if (session) {
+      const typedName = name.trim();
+      if (typedName) {
+        await rememberDisplayName(email.trim(), typedName);
+      }
+      setSubmitting(false);
       router.push('/(import)/import1');
-    } else {
-      setInfoMessage('Account created — check your email for a confirmation link, then log in.');
+      return;
     }
+    // No session and no error. Two possibilities: (a) confirmation mail
+    // is on its way, or (b) this email already has an account — Supabase
+    // deliberately returns an obfuscated user (empty identities) instead
+    // of an "already exists" error, to block account enumeration.
+    const identities = user?.identities ?? [];
+    if (identities.length === 0) {
+      // Can't trust the field alone (some versions omit it entirely), so
+      // prove ownership: sign in with the credentials just entered. The
+      // user typed this password seconds ago, so success unambiguously
+      // means the account pre-existed — sign them in and continue.
+      const { data: retry } = await supabase.auth.signInWithPassword({
+        email: email.trim(),
+        password,
+      });
+      if (retry.session) {
+        // Existing account: apply the freshly typed name if it differs
+        // from what's stored, otherwise the greeting keeps showing the
+        // old name forever. Remember it too, so a later OAuth login
+        // with a provider-side name can't silently overwrite it.
+        const typedName = name.trim();
+        const storedName = retry.session.user?.user_metadata?.full_name;
+        if (typedName && typedName !== storedName) {
+          await supabase.auth.updateUser({ data: { full_name: typedName } });
+        }
+        if (typedName) {
+          await rememberDisplayName(email.trim(), typedName);
+        }
+        setSubmitting(false);
+        router.push('/(import)/import1');
+        return;
+      }
+      setSubmitting(false);
+      setEmailError('This email already has an account — log in instead.');
+      setInfoMessage('If this is a new address, check your inbox for the confirmation link.');
+      return;
+    }
+    // Real user record, confirmation mail on its way. Don't strand them:
+    // remember the pending address and the typed name, and let them into
+    // the import flow — the guide screens are static, and the upload step
+    // + home nudge them to confirm. Tapping the email link returns to the
+    // app with a session (emailRedirectTo) and lands them back here via
+    // next='signup'. The name is already in user_metadata from signUp, but
+    // remembering it guards against a later provider-side overwrite.
+    setSubmitting(false);
+    await setPendingEmail(email.trim());
+    const pendingName = name.trim();
+    if (pendingName) {
+      await rememberDisplayName(email.trim(), pendingName);
+    }
+    router.push('/(import)/import1');
   }
 
   async function handleOAuth(provider: 'google' | 'apple'): Promise<void> {
     setSubmitting(true);
     setErrorMessage(null);
     setInfoMessage(null);
-    const { error } = await signInWithOAuth(provider, 'signup');
+    // OAuth signups detour through the your-name screen (prefilled when
+    // the provider gave us a name) before the import flow.
+    const { error } = await signInWithOAuth(provider, 'name');
     setSubmitting(false);
 
     if (error) {
@@ -83,7 +141,7 @@ export default function SignupScreen() {
 
     const { data } = await supabase.auth.getSession();
     if (data?.session) {
-      router.push('/(import)/import1');
+      router.push('/(auth)/your-name');
     } else {
       setErrorMessage(
         'Sign-in did not complete — no session was created. Check your connection and try again.',
@@ -155,11 +213,19 @@ export default function SignupScreen() {
           <TextField
             placeholder="you@email.com"
             value={email}
-            onChangeText={setEmail}
+            onChangeText={(text) => {
+              setEmail(text);
+              setEmailError(null);
+            }}
             autoCapitalize="none"
             keyboardType="email-address"
             minHeight={46}
           />
+          {emailError ? (
+            <Text style={{ fontFamily: font.body, fontSize: 12, color: color.coral, textAlign: 'center' }}>
+              {emailError}
+            </Text>
+          ) : null}
           <TextField
             placeholder="Password"
             value={password}

@@ -6,7 +6,8 @@ import { SafeAreaProvider } from 'react-native-safe-area-context';
 import * as SplashScreen from 'expo-splash-screen';
 import { StatusBar } from 'expo-status-bar';
 import { useAuth } from '@/hooks/useAuth';
-import { consumeOAuthNext } from '@/lib/oauth';
+import { consumeOAuthNext, routeForOAuthNext } from '@/lib/oauth';
+import { clearPendingEmail, getPendingEmail } from '@/lib/verification';
 
 SplashScreen.preventAutoHideAsync().catch(() => {
   // no-op: acceptable if called before native module is ready
@@ -42,13 +43,29 @@ function AuthGate() {
     // Recovery-link landing screen manages its own routing (it needs the
     // recovery session to stay put while the user sets a new password).
     const onResetPassword = group === 'auth' && segments[1] === 'reset-password';
+    // Same for the post-OAuth name step — it navigates itself onward.
+    const onYourName = inAuth && segments[1] === 'your-name';
 
-    if (session && inAuth && !onResetPassword) {
-      consumeOAuthNext().then((next) => {
-        router.replace((next === 'signup' ? '/(import)/import1' : '/(app)/home') as never);
+    if (session) {
+      // Verified (or OAuth) session resolves any pending confirmation.
+      void clearPendingEmail();
+      if (inAuth && !onResetPassword && !onYourName) {
+        consumeOAuthNext().then((next) => {
+          router.replace(routeForOAuthNext(next) as never);
+        });
+      }
+      return;
+    }
+    if (inProtected) {
+      // Fresh email signups have no session until the link is tapped, but
+      // may still browse the (static) import guide AND home while the mail
+      // lands — the verify nudge follows them there. Never bounce a
+      // pending user back to welcome; only fully-signed-out users go there.
+      void getPendingEmail().then((pending) => {
+        if (!pending) {
+          router.replace('/(auth)/welcome' as never);
+        }
       });
-    } else if (!session && inProtected) {
-      router.replace('/(auth)/welcome' as never);
     }
   }, [session, loading, segments, router]);
 

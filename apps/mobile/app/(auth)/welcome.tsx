@@ -40,7 +40,7 @@ export default function WelcomeScreen() {
             entering={FadeInUp.duration(550)}
             style={{ alignItems: 'center', gap: space.xl, width: '100%' }}
           >
-            <Text style={{ fontFamily: font.script, fontSize: 19, color: color.ink }}>Spillthereel</Text>
+            <Text style={{ fontFamily: font.script, fontSize: 19, color: color.coral }}>Spillthereel</Text>
 
             <Text
               style={{

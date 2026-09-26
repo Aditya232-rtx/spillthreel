@@ -1,7 +1,8 @@
 import { useEffect, useState } from 'react';
 import { Redirect } from 'expo-router';
 import { useAuth } from '@/hooks/useAuth';
-import { consumeOAuthNext } from '@/lib/oauth';
+import { consumeOAuthNext, routeForOAuthNext } from '@/lib/oauth';
+import { getPendingEmail } from '@/lib/verification';
 
 /**
  * Entry route. Session-aware: a signed-in user (e.g. just back from the
@@ -18,11 +19,14 @@ export default function Index() {
       return;
     }
     if (!session) {
-      setDestination('/(auth)/welcome');
+      // Pending-confirmation users resume the import flow, never welcome.
+      getPendingEmail().then((pending) => {
+        setDestination(pending ? '/(import)/import1' : '/(auth)/welcome');
+      });
       return;
     }
     consumeOAuthNext().then((next) => {
-      setDestination(next === 'signup' ? '/(import)/import1' : '/(app)/home');
+      setDestination(routeForOAuthNext(next));
     });
   }, [session, loading]);
 

@@ -13,7 +13,7 @@ import { Text, View } from 'react-native';
 import { useRouter } from 'expo-router';
 import { useURL } from 'expo-linking';
 import { supabase } from '@/lib/supabase';
-import { consumeOAuthNext, handleOAuthCallbackUrl } from '@/lib/oauth';
+import { consumeOAuthNext, handleOAuthCallbackUrl, routeForOAuthNext } from '@/lib/oauth';
 import { color, font, fontSize } from '@/theme/tokens';
 
 export default function AuthCallbackScreen() {
@@ -29,7 +29,7 @@ export default function AuthCallbackScreen() {
       // if a session exists we are done, otherwise wait for the deep link.
       const { data: existing } = await supabase.auth.getSession();
       const next = await consumeOAuthNext();
-      const destination = next === 'signup' ? '/(import)/import1' : '/(app)/home';
+      const destination = routeForOAuthNext(next);
 
       if (existing.session) {
         router.replace(destination as never);

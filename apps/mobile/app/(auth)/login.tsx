@@ -137,13 +137,6 @@ export default function LoginScreen() {
           <TextField placeholder="you@email.com" value={email} onChangeText={setEmail} autoCapitalize="none" keyboardType="email-address" />
           <TextField placeholder="password" value={password} onChangeText={setPassword} secureTextEntry />
 
-          <Text
-            onPress={() => router.push('/(auth)/forgot-password')}
-            style={{ width: '100%', textAlign: 'right', fontFamily: font.body, fontSize: 12, color: color.ink, textDecorationLine: 'underline' }}
-          >
-            Forgot password?
-          </Text>
-
           {errorMessage ? (
             <Text style={{ fontFamily: font.body, fontSize: 12, color: color.coral, textAlign: 'center' }}>
               {errorMessage}
@@ -161,6 +154,13 @@ export default function LoginScreen() {
               onPress={handlePasswordLogin}
             />
           </View>
+
+          <Text
+            onPress={() => router.push('/(auth)/forgot-password')}
+            style={{ fontFamily: font.body, fontSize: 12, color: color.coral, textAlign: 'center' }}
+          >
+            forgot password
+          </Text>
         </View>
 
         <Text style={{ fontFamily: font.body, fontSize: 11, color: 'rgba(21,23,15,0.6)', textAlign: 'center', marginTop: space.sm }}>

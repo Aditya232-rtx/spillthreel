@@ -1,10 +1,12 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Pressable, Text, View } from 'react-native';
 import { useRouter } from 'expo-router';
 import * as DocumentPicker from 'expo-document-picker';
 import { Svg, Path, Circle } from 'react-native-svg';
 import { PillButton, type PillButtonVariant } from '@/components/PillButton';
 import { ProgressDots } from '@/components/ProgressDots';
+import { useAuth } from '@/hooks/useAuth';
+import { getPendingEmail, resendConfirmation } from '@/lib/verification';
 import { color, font, fontSize, radius, space } from '@/theme/tokens';
 
 type UploadState = 'idle' | 'picked' | 'importing' | 'done';
@@ -40,8 +42,28 @@ const COPY: Record<UploadState, { dropzone: string; dropzoneSub: string; buttonL
 
 export default function Import3Screen() {
   const router = useRouter();
+  const { session } = useAuth();
   const [state, setState] = useState<UploadState>('idle');
+  const [pendingEmail, setPendingEmailState] = useState<string | null>(null);
+  const [resendNote, setResendNote] = useState<string | null>(null);
+  const [resending, setResending] = useState(false);
   const copy = COPY[state];
+
+  useEffect(() => {
+    if (!session) {
+      getPendingEmail().then(setPendingEmailState);
+    } else {
+      setPendingEmailState(null);
+    }
+  }, [session]);
+
+  async function handleResend(): Promise<void> {
+    if (!pendingEmail || resending) return;
+    setResending(true);
+    const error = await resendConfirmation(pendingEmail);
+    setResending(false);
+    setResendNote(error ?? `Fresh link sent to ${pendingEmail}.`);
+  }
 
   async function pickFile() {
     if (state === 'importing') return;
@@ -79,6 +101,37 @@ export default function Import3Screen() {
       >
         DROP THE ZIP{'\n'}HERE.
       </Text>
+
+      {!session && pendingEmail ? (
+        <View
+          style={{
+            backgroundColor: '#F6E3D3',
+            borderWidth: 2,
+            borderColor: color.ink,
+            borderRadius: radius.md,
+            padding: space.md,
+            gap: 6,
+          }}
+        >
+          <Text style={{ fontFamily: font.display, fontSize: 13, color: color.ink, textTransform: 'uppercase' }}>
+            Confirm your email to unlock import
+          </Text>
+          <Text style={{ fontFamily: font.body, fontSize: 12, lineHeight: 17, color: 'rgba(21,23,15,0.75)' }}>
+            We sent a link to {pendingEmail}. Tap it, come back here, and your library unlocks.
+          </Text>
+          <Text
+            onPress={handleResend}
+            style={{ fontFamily: font.body, fontSize: 12, color: color.coral, textDecorationLine: 'underline' }}
+          >
+            {resending ? 'Sending…' : 'Resend confirmation link'}
+          </Text>
+          {resendNote ? (
+            <Text style={{ fontFamily: font.body, fontSize: 11.5, color: 'rgba(21,23,15,0.7)' }}>
+              {resendNote}
+            </Text>
+          ) : null}
+        </View>
+      ) : null}
 
       <View style={{ flex: 1, justifyContent: 'center', gap: space.xl }}>
         <Pressable

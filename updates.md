@@ -1,8 +1,8 @@
 # SpillTheReel — Build Updates & Punch List
 
-**Last updated:** 2026-09-19
+**Last updated:** 2026-09-26
 **Repo:** https://github.com/Aditya232-rtx/spillthreel
-**Latest commit:** _(pending)_ — feat(backend): Phase 1 ingest pipeline scaffolding + Storage buckets
+**Latest commit:** `17eec3b` — feat(app): dynamic identity, verify nudges, chat rebuild
 
 Living document. Keep this in the repo root, update on every session close.
 Structure per section: **✅ Done · 🟡 Needs improvement · 🔴 Missing · ⏳ Pending**.
@@ -43,6 +43,15 @@ Companion docs (contract-level, don't drift): [prd.md](./prd.md) · [trd.md](./t
 - **Categories dial** — full port of the reference's virtual-circle physics: 30 fixed slots, `translateY(radius·sin θ) rotate(θ) scale()` per card, `transform-origin: left`, hard 5px shadow via stacked backplate, cream fade masks matching page bg. Drag + `withDecay` momentum. Tap-vs-drag split via `activeOffsetY([-8, 8])`.
 - **Add-category flow** — floating "+" button on Categories header (coral shadow), `AddCategoryModal` with name field + 16-emoji picker + palette rotation, `useCategories()` hook backed by AsyncStorage (v1 shim; swap-in ready for `POST /v1/categories`).
 - **Categories store** persists to AsyncStorage; new categories show in dial with emoji, correct color from palette rotation, updated header count.
+- **Auth flow hardening** — fixed OAuth loop-back (web `detectSessionInUrl`, native deep-link `app/auth/callback` route, Supabase redirect-URL whitelist), central `AuthGate` + session-aware index (no more welcome-bounce), duplicate-email signup detection (silent sign-in proof + inline "already has an account" note under the email field), pending-confirmation flow (proceeds to import, `emailRedirectTo` returns link taps to the app).
+- **Password reset** — `(auth)/forgot-password` (email → `resetPasswordForEmail` with deep-link redirect) + `auth/reset-password` landing screen (link verification, new + confirm fields, expired-link handling, resend). Login link moved below the Log in button as minimal coral text.
+- **Password rules** — shared `src/lib/password.ts` (8+ chars, letter + number), confirm fields on signup + reset, client-side pre-checks.
+- **Native Sign In with Apple** on iOS (`expo-apple-authentication` + `expo-crypto` nonce, `signInWithIdToken`), web-OAuth fallback elsewhere.
+- **Auth hygiene** — `__DEV__`-gated sanitized OAuth logs (tokens redacted), 401 → local `signOut()` via `AuthGate` to welcome, fail-fast on missing `EXPO_PUBLIC_*` env (+ `apps/mobile/.env.example`).
+- **Dynamic identity** — `src/lib/display-name.ts` drives home greeting, avatar initial, and profile (name, handle, join date, avatar initial); `(auth)/your-name` step in OAuth-signup; inline profile name editor; per-email last-choice-wins guard re-applied on every `SIGNED_IN` so provider logins can't silently rename.
+- **Verify nudges** — `src/lib/verification.ts` (pending flag, dismissal, resend); import guide browsable pre-confirmation; confirm card + resend on import3; coral dot on home avatar + auto-popup anchored at the profile icon.
+- **Chat rebuild** — live per-user conversations with typing indicator and persisted history drawer (bottom hamburger, slide-in panel, new/switch/delete); mic/send morph button (coral mic, hold-to-talk, Web Speech on web); suggestion chips send on tap; fixed-height chip row; SVG back chevron (optically centered); frosted-glass back buttons matching the dock; chat empty state ("Ask your second brain anything.").
+- **Welcome wordmark** coral (`#E85C3F`); MyLove weight bug fixed (no `fontWeight` on single-weight script — Android fell back to system sans).
 
 ### 🟡 Needs improvement
 
@@ -53,11 +62,11 @@ Companion docs (contract-level, don't drift): [prd.md](./prd.md) · [trd.md](./t
 ### 🔴 Missing
 
 - **Item detail sheet** (PRD F4.5) — not built.
-- **Search screen** (PRD F3.3, distinct from the Chat screen) — not built. Filter chips, similar-to-this, query history.
+- **Search screen** (PRD F3.3, distinct from the Chat screen) — not built. Filter chips, similar-to-this, query history. (Chat has live local conversations + stub replies; no backend RAG yet.)
 - **Library browse tab** — currently the Home screen doubles as this. Needs full virtualized list per PRD F4.1.
 - **Search-permission onboarding walkthrough** (PRD F5.5) — not built.
 - **Notification opt-in flow** (PRD F5.8) — not built.
-- **Empty states** for library + categories + chat.
+- **Empty states** for library + categories (chat empty state built).
 - **Item state badge** component (queued / analyzing / fully_indexed / failed).
 - **Enhance CTA** on text-indexed items (PRD F4.5, F8.12).
 - **Saved Audio tab** (PRD F8.7).
@@ -66,12 +75,11 @@ Companion docs (contract-level, don't drift): [prd.md](./prd.md) · [trd.md](./t
 
 ### ⏳ Pending (blocked on backend or later phases)
 
-- **Supabase JS client integration** on the mobile side — wire `@supabase/supabase-js` for OAuth flows, session storage in `expo-secure-store`.
-- **Real API layer** (`src/lib/api.ts`) — TanStack Query + fetch wrapper that attaches the Supabase JWT to every request.
+- **TanStack Query hooks** — `src/lib/api.ts` fetch wrapper exists (JWT attach, 401 → signOut); per-screen `useQuery`/`useMutation` hooks not yet written.
 - **Share-sheet / share-intent integration** (PRD F1) — configs in place, native code not yet wired.
 - **Expo push notifications** (PRD F6) — deferred to Phase 3.
 - **PostHog SDK bootstrap** + event schema.
-- **Sentry SDK integration**.
+- **Sentry SDK integration** (mobile; backend hook exists).
 
 ---
 
@@ -99,15 +107,19 @@ Companion docs (contract-level, don't drift): [prd.md](./prd.md) · [trd.md](./t
 - **`.env`** filled locally with real Supabase creds (gitignored).
 - **`pyproject.toml`** — full dep manifest with `worker` and `dev` extras.
 
+- **Rate limiting** (`app/ratelimit.py`, `slowapi` dep) — 60 req/min default on every route via `DefaultRateLimitMiddleware` (custom: stock `SlowAPIMiddleware` silently exempts Starlette `_IncludedRouter` routes), keyed by JWT `sub` else IP (XFF-aware); stricter 10/min on `POST /v1/saves`; 429 with `Retry-After: 60`. Limits resolve from settings per-request (`RATE_LIMIT_DEFAULT`, `RATE_LIMIT_SAVES`).
+- **CORS lockdown** — `"*"` only in dev; staging/prod require explicit `CORS_ALLOWED_ORIGINS` and refuse to boot without it.
+- **Profile display-name sync** — auth middleware updates `profiles.display_name` from JWT claims whenever it changes (was write-once at creation).
+- **Tests**: `tests/unit/test_auth_security.py` (expired / malformed / wrong-audience / HS256-without-secret / unsupported-alg JWTs) + `tests/integration/test_rate_limit.py` (429 + `Retry-After`, global and per-route paths). Full suite: 58 passed, 12 skipped.
+
 ### 🟡 Needs improvement
 
-- **Test coverage: ~10%** — 16 unit tests covering platform_detect + extractor registry fallback semantics. Ingestion pipeline itself untested (needs mock fixtures for the four external services).
+- **Test coverage** — auth + rate-limit suites added (58 passed); ingestion pipeline itself still untested (needs mock fixtures for the four external services).
 - **OpenTelemetry tracing** — TRD §17.2 promises spans on every service call; not wired.
 - **Custom Cloud Monitoring metrics** — TRD §17.3 promises 8 histograms/gauges; not wired.
-- **Rate limiting** — TRD §14.1 promises 100 req/min per user; not wired.
-- **CORS** currently `allow_origins=["*"]` — needs env-scoped list before staging.
 - The Alembic migration (`20260918_0001_initial.py`) and the pure-SQL script (`apply_initial_schema.sql`) are duplicated by hand — need a linter that alerts on drift.
 - **Health endpoint** returns hardcoded version; should read from a build-time env var.
+- **Ruff/mypy** — repo baseline has pre-existing violations (25 ruff, ULID `call-arg` mypy); touched files kept clean, full cleanup still owing.
 
 ### ✅ Done (Phase 1 core scaffolding — 2026-09-19)
 
@@ -174,9 +186,8 @@ Companion docs (contract-level, don't drift): [prd.md](./prd.md) · [trd.md](./t
 
 ### 🔴 Missing
 
-- **OAuth providers** — Google + Apple + Email not yet configured in Supabase Auth → Providers.
-- **Google OAuth 2.0 Client ID + Secret** — need to create in Google Cloud Console, upload to Supabase.
-- **Apple Services ID + p8 key** — need to create in Apple Developer portal, upload to Supabase.
+- **Apple provider** — Services ID + p8 key still need creating in the Apple Developer portal and uploading to Supabase Auth → Providers. (Google + Email configured and verified live: Google round-trip lands in-app, confirmation mail sends; "Confirm email" currently ON.)
+- **Leaked-password protection** — dashboard toggle (Auth → Password protection), not yet enabled.
 
 ### ⏳ Pending
 
@@ -189,9 +200,10 @@ Companion docs (contract-level, don't drift): [prd.md](./prd.md) · [trd.md](./t
 
 ### ✅ Done
 
-- **Repo pushed** to https://github.com/Aditya232-rtx/spillthreel (main branch, 8 commits).
-- **`.mcp.json`** committed — Supabase MCP available on session restart.
-- **`.gitignore`** covers all env files (`!.env.example` allowlist), Python caches, `.expo/`, editor dirs.
+- **Repo pushed** to https://github.com/Aditya232-rtx/spillthreel (main branch — see §9 for current history).
+- **`.mcp.json`** committed — Supabase MCP available on session restart. OpenCode global config also carries the server (authenticated via `opencode mcp auth`, browser OAuth, verified connected).
+- **Agent skills** committed (`.agents/skills/`: `supabase`, `supabase-postgres-best-practices` + `skills-lock.json`), mirrored to `~/.agents/skills` for OpenCode auto-loading.
+- **`.gitignore`** covers all env files (`!.env.example` allowlist), Python caches, `.expo/`, editor dirs — plus Terraform state/vars, mobile signing artifacts (`google-services.json`, keystores, p8/p12), real-user export fixtures (`user_export_*.zip`), and `bugreport-*.zip` emulator dumps.
 
 ### 🔴 Missing (Phase 0 work still owing)
 
@@ -244,6 +256,9 @@ Companion docs (contract-level, don't drift): [prd.md](./prd.md) · [trd.md](./t
 - **Region choice** (ap-south-1) is optimized for Indian users but adds ~200ms to every Gemini/Cognee call (both US-hosted). Worth measuring end-to-end save-to-ready latency and re-evaluating if it exceeds PRD's 60s median target.
 - **No RLS tests in CI yet** — TRD §18 promises a dedicated pytest suite. Every schema change should re-run this before merging.
 - **`alembic_version` table has no RLS** — intentional (Alembic bypasses it via service_role) but worth documenting explicitly to avoid a future audit flag.
+- **Confirmation links are web-origin on web** — `emailRedirectTo` is `window.location.origin` for web signups, so tapping the link on a phone browser pointed at localhost goes nowhere; confirm on the Metro host or sign up from the native app (deep-link return). Revisit with a hosted domain before launch.
+- **Voice input is web-only for now** — hold-to-talk UI + timer + release-to-send work everywhere, but transcription uses the browser Speech API; native needs an STT module (dev build only, not Expo Go).
+- **Past reference images went missing** — several pasted screenshots arrived blank on the agent side; the pixel-measured chevron + screenshot-verified chat pass replaced that loop. Prefer committing reference assets under `assets/` when pixel-fidelity matters.
 
 ---
 
@@ -251,20 +266,28 @@ Companion docs (contract-level, don't drift): [prd.md](./prd.md) · [trd.md](./t
 
 In priority order. Session should pick up here:
 
-1. **Drop Gemini + Cognee + Groq API keys** into `apps/api/.env` — unblocks live pipeline testing.
-2. **`uv sync` in `apps/api/`** — install deps.
-3. **Boot the backend locally** — `uv run uvicorn app.main:app --reload`. Curl `/health`.
-4. **Manual smoke test** — mint a real Supabase JWT from the mobile app OR via `supabase auth` CLI; POST to `/v1/saves` with a real IG reel URL; watch the ingestion pipeline run end-to-end (Cobalt fetch → ffmpeg → Gemini → Cognee → thumbnail in Supabase Storage → item.state=fully_indexed).
-5. **Configure Google + Apple + Email providers** in Supabase Auth → Providers.
-6. **Wire Supabase JS on mobile** (`@supabase/supabase-js` + secure-store session adapter).
-7. **Build search RAG loop** — `services/search/retriever.py`, `services/search/answerer.py`, `/v1/search` endpoint.
-8. **Build IG import pipeline** (Phase 2) — `services/imports/ig_parser.py`, `ig_pipeline.py`, `/v1/import/instagram` endpoint.
+1. **Build search RAG loop** — `services/search/retriever.py`, `services/search/answerer.py`, `/v1/search` endpoint (chat UI is ready with stub replies + history).
+2. **Build IG import pipeline** (Phase 2) — parser exists (`ig_parser.py` + `taxonomy.py` + corpus tests); still missing `ig_pipeline.py`, `/v1/import/instagram` upload + `/v1/import/{id}` progress endpoints, throttled enhance queue.
+3. **Remaining Phase 1 endpoints** — `/v1/events` SSE, `/enhance`, `/retry`, `/notifications/token`, `gallerydl.py`, `cognee_oss.py` stub.
+4. **Manual smoke test** — POST to `/v1/saves` with a real IG reel URL; watch ingestion end-to-end (Cobalt → ffmpeg → Gemini → Cognee → thumbnail → `fully_indexed`).
+5. **Share-sheet native wiring** (PRD F1) + TestFlight external build to validate the pattern early.
+6. **Apple provider** — Services ID + p8 key → Supabase dashboard; then native-Apple test on a real iOS device.
+7. **Observability** — OTel spans, Cloud Monitoring metrics, alert policies (TRD §17).
+8. **CI workflows** + RLS test suite + EAS Build/Submit configs.
 
 ---
 
 ## 9. Commit History Snapshot
 
 ```
+17eec3b feat(app): dynamic identity, verify nudges, chat rebuild
+44f67a4 chore(tools): add Supabase agent skills + lockfile
+975e18f feat(auth): production-grade authentication
+84bd6e9 chore(security): ignore real-user IG export fixtures (personal data)
+88218e8 chore(security): harden .gitignore for env variants, terraform, signing keys
+33891db feat(mobile): fix OAuth login/signup flow + root auth gate
+bf714a3 feat(backend): Phase 1 ingest pipeline scaffolding + Storage buckets
+863d60e docs: add updates.md — living build punch-list
 8aa3b9d feat(db): apply initial schema to Supabase Postgres
 561605d chore: add Supabase MCP server to project config
 7d1d10f feat(backend): Supabase new-format API keys + asymmetric JWT (ES256/JWKS)

@@ -8,9 +8,15 @@
  *   * `loading` true — we're still hydrating from SecureStore
  */
 import { useEffect, useState } from 'react';
+import { Platform } from 'react-native';
 import type { AuthError, Session, User } from '@supabase/supabase-js';
 import { supabase } from '@/lib/supabase';
-import { performOAuthSignIn } from '@/lib/oauth';
+import { getRememberedDisplayName } from '@/lib/display-name';
+import {
+  buildOAuthRedirectUrl,
+  performOAuthSignIn,
+  type OAuthNext,
+} from '@/lib/oauth';
 
 interface UseAuthResult {
   session: Session | null;
@@ -21,10 +27,10 @@ interface UseAuthResult {
     email: string,
     password: string,
     displayName?: string,
-  ) => Promise<{ error: AuthError | null; session: Session | null }>;
+  ) => Promise<{ error: AuthError | null; session: Session | null; user: User | null }>;
   signInWithOAuth: (
     provider: 'google' | 'apple',
-    next?: 'login' | 'signup',
+    next?: OAuthNext,
   ) => Promise<{ error: AuthError | null }>;
   signOut: () => Promise<void>;
 }
@@ -45,9 +51,21 @@ export function useAuth(): UseAuthResult {
     // Subscribe to token refreshes, sign-in, sign-out — the callback
     // fires whether the change originated from this hook or any other
     // path (e.g. the OAuth deep-link handler).
-    const { data: sub } = supabase.auth.onAuthStateChange((_event, next) => {
+    const { data: sub } = supabase.auth.onAuthStateChange(async (event, next) => {
       setSession(next);
       setLoading(false);
+      // OAuth providers overwrite user_metadata with the provider profile
+      // on every sign-in. If the user explicitly chose a different name
+      // before, re-apply it so the provider never silently renames them.
+      // (USER_UPDATED from our own write below doesn't re-trigger this.)
+      if (event === 'SIGNED_IN' && next?.user?.email) {
+        const email = next.user.email;
+        const wanted = await getRememberedDisplayName(email);
+        const current = next.user.user_metadata?.full_name;
+        if (wanted && wanted !== current) {
+          await supabase.auth.updateUser({ data: { full_name: wanted } });
+        }
+      }
     });
 
     return () => {
@@ -64,14 +82,23 @@ export function useAuth(): UseAuthResult {
       return { error };
     },
     signUpWithPassword: async (email, password, displayName) => {
+      // emailRedirectTo brings the confirmation-link tap back into the
+      // app (deep link on native, origin on web) instead of stranding
+      // the user on Supabase's Site URL. Our auth/callback screen
+      // exchanges the code and routes via the stored oauth-next flag.
+      const emailRedirectTo =
+        Platform.OS === 'web' && typeof window !== 'undefined'
+          ? `${window.location.origin}`
+          : buildOAuthRedirectUrl();
       const { data, error } = await supabase.auth.signUp({
         email,
         password,
-        options: displayName
-          ? { data: { full_name: displayName } }
-          : undefined,
+        options: {
+          ...(displayName ? { data: { full_name: displayName } } : undefined),
+          emailRedirectTo,
+        },
       });
-      return { error, session: data.session };
+      return { error, session: data.session, user: data.user };
     },
     signInWithOAuth: async (provider, next = 'login') => {
       return performOAuthSignIn(provider, next);
