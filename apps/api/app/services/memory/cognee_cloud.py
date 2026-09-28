@@ -84,9 +84,7 @@ class CogneeCloudStore:
         )
         return doc_id
 
-    async def write_batch(
-        self, user_id: str, items: list[IndexedItem]
-    ) -> list[str]:
+    async def write_batch(self, user_id: str, items: list[IndexedItem]) -> list[str]:
         """Batch write for bulk imports (TRD §14.4 — up to 50 per call)."""
         if not items:
             return []

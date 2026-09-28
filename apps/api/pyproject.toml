@@ -72,6 +72,12 @@ python_version = "3.12"
 strict = true
 plugins = ["pydantic.mypy"]
 
+# yt-dlp ships no type stubs (and typeshed has none). Standard idiom:
+# don't punish our code for an untyped third-party import.
+[[tool.mypy.overrides]]
+module = "yt_dlp.*"
+ignore_missing_imports = true
+
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]

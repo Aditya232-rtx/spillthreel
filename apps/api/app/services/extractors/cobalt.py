@@ -20,8 +20,8 @@ import httpx
 
 from app.observability.logging import get_logger
 from app.services.extractors.base import (
-    ExtractResult,
     ExtractorError,
+    ExtractResult,
     Platform,
 )
 from app.settings import get_settings
@@ -71,9 +71,7 @@ class CobaltExtractor:
             raise ExtractorError(f"cobalt HTTP error: {e}") from e
 
         if response.status_code >= 400:
-            raise ExtractorError(
-                f"cobalt returned {response.status_code}: {response.text[:200]}"
-            )
+            raise ExtractorError(f"cobalt returned {response.status_code}: {response.text[:200]}")
 
         try:
             body = response.json()
@@ -119,12 +117,14 @@ async def _download_to_tmp(url: str) -> Path:
     video_path = tmp_dir / "source.bin"
 
     try:
-        async with httpx.AsyncClient(timeout=_STREAM_TIMEOUT_SECONDS) as client:
-            async with client.stream("GET", url) as r:
-                r.raise_for_status()
-                with video_path.open("wb") as f:
-                    async for chunk in r.aiter_bytes(chunk_size=1024 * 64):
-                        f.write(chunk)
+        async with (
+            httpx.AsyncClient(timeout=_STREAM_TIMEOUT_SECONDS) as client,
+            client.stream("GET", url) as r,
+        ):
+            r.raise_for_status()
+            with video_path.open("wb") as f:
+                async for chunk in r.aiter_bytes(chunk_size=1024 * 64):
+                    f.write(chunk)
     except httpx.HTTPError as e:
         # Clean up the empty file on failure — pipeline should never see
         # a half-written source that ffmpeg then chokes on.

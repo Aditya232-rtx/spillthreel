@@ -12,12 +12,15 @@ Run locally:
 
 from __future__ import annotations
 
+import os
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from typing import Any
 
 import sentry_sdk
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from sentry_sdk.types import Event
 from slowapi.errors import RateLimitExceeded
 
 from app.api import health
@@ -31,6 +34,36 @@ from app.ratelimit import (
 from app.settings import get_settings
 from app.tasks import worker_entry
 
+_SCRUBBED_HEADERS = {"authorization", "cookie", "set-cookie"}
+_SCRUBBED_BODY_KEYS = ("password", "secret", "token", "code", "authorization")
+
+
+def _sentry_before_send(event: Event, _hint: dict[str, Any]) -> Event | None:
+    """Strip credentials before anything leaves the process.
+
+    The Authorization header carries Supabase JWTs and request bodies can
+    carry passwords (signup/login) — neither may reach Sentry.
+    """
+    request = event.get("request")
+    if isinstance(request, dict):
+        headers = request.get("headers")
+        if isinstance(headers, dict):
+            request["headers"] = {
+                key: "[redacted]" if key.lower() in _SCRUBBED_HEADERS else value
+                for key, value in headers.items()
+            }
+        data = request.get("data")
+        if isinstance(data, dict):
+            request["data"] = {
+                key: (
+                    "[redacted]"
+                    if any(part in key.lower() for part in _SCRUBBED_BODY_KEYS)
+                    else value
+                )
+                for key, value in data.items()
+            }
+    return event
+
 
 @asynccontextmanager
 async def _lifespan(_app: FastAPI) -> AsyncIterator[None]:
@@ -40,8 +73,10 @@ async def _lifespan(_app: FastAPI) -> AsyncIterator[None]:
         sentry_sdk.init(
             dsn=settings.sentry_dsn,
             environment=settings.environment,
+            release=settings.sentry_release or os.environ.get("GIT_SHA"),
             traces_sample_rate=0.1 if settings.environment == "prod" else 0.0,
             send_default_pii=False,
+            before_send=_sentry_before_send,
         )
     get_logger(__name__).info("api.startup", environment=settings.environment)
     yield
@@ -64,14 +99,11 @@ def create_app() -> FastAPI:
         allow_origins = ["*"]
     else:
         allow_origins = [
-            origin.strip()
-            for origin in settings.cors_allowed_origins.split(",")
-            if origin.strip()
+            origin.strip() for origin in settings.cors_allowed_origins.split(",") if origin.strip()
         ]
         if not allow_origins:
             raise RuntimeError(
-                "CORS_ALLOWED_ORIGINS must be set when ENVIRONMENT is "
-                f"{settings.environment!r}"
+                f"CORS_ALLOWED_ORIGINS must be set when ENVIRONMENT is {settings.environment!r}"
             )
     app.add_middleware(
         CORSMiddleware,

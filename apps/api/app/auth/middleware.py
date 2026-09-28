@@ -81,9 +81,7 @@ async def _current_user(
         _logger.info("auth.profile_created", user_id=user_id)
     else:
         if profile.deleted_at is not None:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN, detail="account deleted"
-            )
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="account deleted")
         # Keep the DB mirror in sync with user_metadata: renames from
         # signup / your-name / profile-edit / OAuth re-apply arrive here
         # as claims on the next authenticated call. Only write when the

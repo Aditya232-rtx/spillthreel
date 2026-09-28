@@ -22,11 +22,11 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from typing import Literal
 
+import ulid
 from fastapi import APIRouter, HTTPException, Request, status
 from pydantic import AnyUrl, BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
-from ulid import ULID
 
 from app.auth.middleware import CurrentUser, DbSession
 from app.db.models import Item
@@ -79,7 +79,7 @@ async def create_save(
 
     normalized = normalize_url(url_str)
     now = datetime.now(UTC)
-    new_id = str(ULID())
+    new_id = str(ulid.new())
 
     # Upsert-with-dedup: INSERT ... ON CONFLICT DO NOTHING RETURNING id
     stmt = (
@@ -113,9 +113,7 @@ async def create_save(
                 detail="dedup lookup failed",
             )
         await session.commit()
-        _logger.info(
-            "saves.duplicate", user_id=user.id, item_id=existing.id, url_norm=normalized
-        )
+        _logger.info("saves.duplicate", user_id=user.id, item_id=existing.id, url_norm=normalized)
         return SaveResponse(item_id=existing.id, state=existing.state, duplicate_of=existing.id)
 
     await session.commit()

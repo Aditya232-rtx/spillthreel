@@ -37,7 +37,7 @@ def rate_limit_key(request: Request) -> str:
         token = auth.split(" ", 1)[1].strip()
         if token:
             try:
-                claims = jwt.get_unverified_claims(token)
+                claims = jwt.decode(token, options={"verify_signature": False})
             except Exception:  # any parse failure falls through to IP
                 claims = {}
             sub = claims.get("sub") if isinstance(claims, dict) else None
@@ -98,9 +98,7 @@ class DefaultRateLimitMiddleware(BaseHTTPMiddleware):
     instead — no route resolution involved.
     """
 
-    async def dispatch(
-        self, request: Request, call_next: RequestResponseEndpoint
-    ) -> Response:
+    async def dispatch(self, request: Request, call_next: RequestResponseEndpoint) -> Response:
         try:
             limiter._check_request_limit(request, None, True)
         except RateLimitExceeded as exc:

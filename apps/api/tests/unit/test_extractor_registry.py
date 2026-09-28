@@ -15,8 +15,8 @@ import pytest
 
 from app.services.extractors import registry as registry_mod
 from app.services.extractors.base import (
-    ExtractResult,
     ExtractorError,
+    ExtractResult,
     NoExtractorSucceededError,
     Platform,
 )
@@ -87,18 +87,22 @@ class TestRegistryFallback:
     async def test_all_fail_raises_no_extractor_succeeded(self) -> None:
         first = _FakeExtractor(raise_extractor_error=True)
         second = _FakeExtractor(raise_extractor_error=True)
-        with patch.object(registry_mod, "_registry", {"instagram": [first, second]}):
-            with pytest.raises(NoExtractorSucceededError):
-                await registry_mod.extract("https://instagram.com/reel/abc")
+        with (
+            patch.object(registry_mod, "_registry", {"instagram": [first, second]}),
+            pytest.raises(NoExtractorSucceededError),
+        ):
+            await registry_mod.extract("https://instagram.com/reel/abc")
 
     async def test_unexpected_exception_propagates(self) -> None:
         """Non-ExtractorError exceptions must NOT be swallowed by fallback —
         the registry only walks past known-failure signals."""
         first = _FakeExtractor(raise_unexpected=True)
         second = _FakeExtractor(result=_make_result())
-        with patch.object(registry_mod, "_registry", {"instagram": [first, second]}):
-            with pytest.raises(RuntimeError, match="boom"):
-                await registry_mod.extract("https://instagram.com/reel/abc")
+        with (
+            patch.object(registry_mod, "_registry", {"instagram": [first, second]}),
+            pytest.raises(RuntimeError, match="boom"),
+        ):
+            await registry_mod.extract("https://instagram.com/reel/abc")
         # Fallback should NOT have been tried.
         assert second.extract_calls == 0
 
@@ -111,6 +115,8 @@ class TestRegistryFallback:
         assert second.extract_calls == 1
 
     async def test_no_extractors_for_platform_raises(self) -> None:
-        with patch.object(registry_mod, "_registry", {"instagram": []}):
-            with pytest.raises(NoExtractorSucceededError):
-                await registry_mod.extract("https://instagram.com/reel/abc")
+        with (
+            patch.object(registry_mod, "_registry", {"instagram": []}),
+            pytest.raises(NoExtractorSucceededError),
+        ):
+            await registry_mod.extract("https://instagram.com/reel/abc")

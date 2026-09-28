@@ -101,9 +101,7 @@ class GeminiSummaryModel:
             genai_types.Part.from_text(text=_SYSTEM_PROMPT),
         ]
         if transcript:
-            parts.append(
-                genai_types.Part.from_text(text=f"Pre-transcribed audio:\n{transcript}")
-            )
+            parts.append(genai_types.Part.from_text(text=f"Pre-transcribed audio:\n{transcript}"))
         for frame in frames:
             parts.append(_part_from_image(frame.path))
         if audio is not None:

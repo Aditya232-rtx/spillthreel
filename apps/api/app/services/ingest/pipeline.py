@@ -28,9 +28,9 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+import ulid
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
-from ulid import ULID
 
 from app.db.engine import session_scope
 from app.db.models import IngestionEvent, Item
@@ -42,6 +42,8 @@ from app.services.llm.groq_whisper import GroqWhisperModel
 from app.services.media import ffmpeg
 from app.services.media.supabase_storage import (
     signed_url as storage_signed_url,
+)
+from app.services.media.supabase_storage import (
     upload_object as storage_upload,
 )
 from app.services.memory.base import IndexedItem
@@ -107,13 +109,16 @@ async def _run(ctx: _RunContext, item: Item) -> None:
     probe = await ffmpeg.probe(result.video_path)
 
     is_long = probe.duration_seconds >= LONG_AUDIO_THRESHOLD_SECONDS
-    frame_interval = LONG_FRAME_INTERVAL_SECONDS if is_long else ffmpeg.DEFAULT_FRAME_INTERVAL_SECONDS
+    frame_interval = (
+        LONG_FRAME_INTERVAL_SECONDS if is_long else ffmpeg.DEFAULT_FRAME_INTERVAL_SECONDS
+    )
     frames_dir = ctx.workdir / "frames"
     frame_paths = await ffmpeg.sample_frames(
         result.video_path, frames_dir, interval_seconds=frame_interval
     )
-    frames = [Frame(path=p, timestamp_seconds=i * frame_interval)
-              for i, p in enumerate(frame_paths)]
+    frames = [
+        Frame(path=p, timestamp_seconds=i * frame_interval) for i, p in enumerate(frame_paths)
+    ]
 
     audio_path = ctx.workdir / "audio.wav" if probe.has_audio else None
     audio_track: AudioTrack | None = None
@@ -235,7 +240,7 @@ async def _lock_and_transition_downloading(session: AsyncSession, item_id: str) 
     item.state = "downloading"
     session.add(
         IngestionEvent(
-            id=str(ULID()),
+            id=str(ulid.new()),
             item_id=item.id,
             from_state=prev_state,
             to_state="downloading",
@@ -246,7 +251,9 @@ async def _lock_and_transition_downloading(session: AsyncSession, item_id: str) 
     return item
 
 
-async def _emit_event(item_id: str, from_state: str, to_state: str, detail: dict[str, Any] | None = None) -> None:
+async def _emit_event(
+    item_id: str, from_state: str, to_state: str, detail: dict[str, Any] | None = None
+) -> None:
     async with session_scope() as session:
         # Also flip items.state at the same time — the state machine is
         # kept in-sync with the audit trail per architecture.md §4.1.
@@ -254,7 +261,7 @@ async def _emit_event(item_id: str, from_state: str, to_state: str, detail: dict
         item.state = to_state
         session.add(
             IngestionEvent(
-                id=str(ULID()),
+                id=str(ulid.new()),
                 item_id=item.id,
                 from_state=from_state,
                 to_state=to_state,
@@ -274,7 +281,7 @@ async def _mark_failed(item_id: str, reason: str) -> None:
         item.failure_reason = reason
         session.add(
             IngestionEvent(
-                id=str(ULID()),
+                id=str(ulid.new()),
                 item_id=item.id,
                 from_state=prev_state,
                 to_state="failed",
@@ -312,7 +319,7 @@ async def _mark_fully_indexed(
         item.updated_at = datetime.now(UTC)
         session.add(
             IngestionEvent(
-                id=str(ULID()),
+                id=str(ulid.new()),
                 item_id=item.id,
                 from_state=prev_state,
                 to_state="fully_indexed",

@@ -81,7 +81,9 @@ class TestNormalizeUrl:
         assert "user:pass@" not in normalize_url("https://user:pass@instagram.com/reel/abc")
 
     def test_stripping_whitespace(self) -> None:
-        assert normalize_url("  https://instagram.com/reel/abc/  ") == "https://instagram.com/reel/abc"
+        assert (
+            normalize_url("  https://instagram.com/reel/abc/  ") == "https://instagram.com/reel/abc"
+        )
 
     def test_dedup_key_stable(self) -> None:
         """Same reel from different share paths should collapse to one key."""

@@ -18,6 +18,10 @@ _logger = get_logger(__name__)
 
 TaskType = Literal["ingest", "import", "enhance", "delete_user", "category_backfill"]
 
+# Fire-and-forget tasks must be referenced or the event loop may cancel
+# them mid-flight on GC. Entries remove themselves when done.
+_BACKGROUND_TASKS: set[asyncio.Task[None]] = set()
+
 
 async def enqueue_task(
     task_type: TaskType,
@@ -45,7 +49,9 @@ async def enqueue_task(
         # in Phase 0 with the GCP module.
         from app.tasks.local_dispatcher import dispatch_local
 
-        asyncio.create_task(dispatch_local(task_type, payload))
+        task = asyncio.create_task(dispatch_local(task_type, payload))
+        _BACKGROUND_TASKS.add(task)
+        task.add_done_callback(_BACKGROUND_TASKS.discard)
         return
 
     # TODO(phase-0): implement Cloud Tasks HTTP push to worker_base_url.

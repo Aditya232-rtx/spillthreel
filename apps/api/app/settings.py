@@ -47,8 +47,7 @@ class Settings(BaseSettings):
     supabase_secret_key: str = Field(
         ...,
         description=(
-            "New-format secret API key (sb_secret_…). "
-            "SECRET — backend only. Bypasses RLS."
+            "New-format secret API key (sb_secret_…). SECRET — backend only. Bypasses RLS."
         ),
     )
     supabase_legacy_jwt_secret: str | None = Field(
@@ -110,6 +109,13 @@ class Settings(BaseSettings):
 
     # ---------------- Observability ----------------
     sentry_dsn: str | None = None
+    sentry_release: str | None = Field(
+        default=None,
+        description=(
+            "Release tag for Sentry (e.g. git SHA or mobile-v1.0.0). "
+            "Falls back to GIT_SHA at init time; unset means unversioned."
+        ),
+    )
 
     # ---------------- Cost guards (per TRD §14.3) ----------------
     per_user_daily_gemini_budget_usd: float = 0.50
@@ -144,4 +150,4 @@ class Settings(BaseSettings):
 @lru_cache(maxsize=1)
 def get_settings() -> Settings:
     """Cached settings singleton. Import via `from app.settings import get_settings`."""
-    return Settings()  # type: ignore[call-arg]  # env vars populate required fields
+    return Settings()  # env vars populate required fields

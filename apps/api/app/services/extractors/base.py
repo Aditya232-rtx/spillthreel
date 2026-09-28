@@ -13,7 +13,6 @@ from typing import Literal, Protocol
 
 from pydantic import BaseModel
 
-
 Platform = Literal["instagram", "tiktok", "youtube", "x"]
 
 

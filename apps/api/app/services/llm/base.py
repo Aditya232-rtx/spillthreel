@@ -12,14 +12,14 @@ from the registry so we can hot-swap the LLM without touching ingest.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from enum import Enum
+from enum import StrEnum
 from pathlib import Path
 from typing import Protocol
 
 from pydantic import BaseModel, Field
 
 
-class Sentiment(str, Enum):
+class Sentiment(StrEnum):
     INFORMATIVE = "informative"
     FUNNY = "funny"
     INSPIRATIONAL = "inspirational"
@@ -32,11 +32,11 @@ class StructuredSummary(BaseModel):
     """The multimodal-summary schema Gemini must return (PRD F2.5)."""
 
     title: str = Field(..., description="~8-word natural title")
-    summary: str = Field(..., description="2–3 sentence description")
+    summary: str = Field(..., description="2-3 sentence description")
     transcript: str = Field(default="", description="full audio transcript")
     on_screen_text: str = Field(default="", description="OCR of on-screen text")
     objects: list[str] = Field(default_factory=list)
-    scenes: list[str] = Field(default_factory=list, description="3–5 scene descriptions")
+    scenes: list[str] = Field(default_factory=list, description="3-5 scene descriptions")
     topics: list[str] = Field(default_factory=list, description="auto-categorization tags")
     sentiment: Sentiment = Sentiment.OTHER
     primary_language: str = "en"

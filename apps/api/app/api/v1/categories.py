@@ -7,10 +7,10 @@ task) lands in Phase 4 alongside the ingest-time classifier.
 
 from __future__ import annotations
 
+import ulid
 from fastapi import APIRouter, HTTPException, status
 from pydantic import BaseModel, Field
 from sqlalchemy import func, select
-from ulid import ULID
 
 from app.auth.middleware import CurrentUser, DbSession
 from app.db.models import Category, ItemCategory
@@ -80,7 +80,7 @@ async def create_category(
     bg_color = _USER_PALETTE[existing_count % len(_USER_PALETTE)]
 
     category = Category(
-        id=str(ULID()),
+        id=str(ulid.new()),
         user_id=user.id,
         name=body.name.upper(),
         source="user",
@@ -122,9 +122,7 @@ async def create_category(
 
 
 @router.delete("/categories/{category_id}", status_code=status.HTTP_204_NO_CONTENT)
-async def delete_category(
-    category_id: str, user: CurrentUser, session: DbSession
-) -> None:
+async def delete_category(category_id: str, user: CurrentUser, session: DbSession) -> None:
     stmt = select(Category).where(
         Category.id == category_id,
         Category.user_id == user.id,

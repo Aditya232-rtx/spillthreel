@@ -48,9 +48,7 @@ def _service_auth_headers() -> dict[str, str]:
     }
 
 
-async def upload_object(
-    bucket: str, object_key: str, source: Path, content_type: str
-) -> str:
+async def upload_object(bucket: str, object_key: str, source: Path, content_type: str) -> str:
     """Upload a local file to `{bucket}/{object_key}`.
 
     Returns the fully-qualified object path (`{bucket}/{object_key}`)
@@ -69,8 +67,7 @@ async def upload_object(
             response = await client.post(url, headers=headers, content=fp.read())
     if response.status_code >= 400:
         raise StorageError(
-            f"upload to {bucket}/{object_key} failed: "
-            f"{response.status_code} {response.text[:200]}"
+            f"upload to {bucket}/{object_key} failed: {response.status_code} {response.text[:200]}"
         )
     _logger.info(
         "storage.uploaded",
@@ -92,12 +89,11 @@ async def signed_url(
         )
     if response.status_code >= 400:
         raise StorageError(
-            f"sign for {bucket}/{object_key} failed: "
-            f"{response.status_code} {response.text[:200]}"
+            f"sign for {bucket}/{object_key} failed: {response.status_code} {response.text[:200]}"
         )
     body = response.json()
     signed_path = body.get("signedURL") or body.get("signedUrl")
-    if not signed_path:
+    if not isinstance(signed_path, str) or not signed_path:
         raise StorageError(f"sign endpoint returned no URL: {body}")
     # signed_path is `/storage/v1/object/sign/…?token=…` — needs the
     # project URL prepended.
@@ -114,6 +110,5 @@ async def delete_object(bucket: str, object_key: str) -> None:
         return
     if response.status_code >= 400:
         raise StorageError(
-            f"delete {bucket}/{object_key} failed: "
-            f"{response.status_code} {response.text[:200]}"
+            f"delete {bucket}/{object_key} failed: {response.status_code} {response.text[:200]}"
         )

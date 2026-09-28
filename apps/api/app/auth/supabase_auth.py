@@ -72,15 +72,13 @@ def verify_access_token(token: str) -> dict[str, Any]:
     if alg in ("ES256", "RS256", "EdDSA"):
         try:
             signing_key = _get_jwks_client().get_signing_key_from_jwt(token)
-        except Exception as e:  # noqa: BLE001 — PyJWKClient can raise many types
+        except Exception as e:
             raise SupabaseAuthError(f"jwks lookup failed: {e}") from e
         key = signing_key.key
         algorithms = [alg]
     elif alg == "HS256":
         if not settings.supabase_legacy_jwt_secret:
-            raise SupabaseAuthError(
-                "token is HS256 but SUPABASE_LEGACY_JWT_SECRET is not set"
-            )
+            raise SupabaseAuthError("token is HS256 but SUPABASE_LEGACY_JWT_SECRET is not set")
         key = settings.supabase_legacy_jwt_secret
         algorithms = ["HS256"]
     else:

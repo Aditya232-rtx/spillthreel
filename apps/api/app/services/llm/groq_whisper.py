@@ -42,7 +42,7 @@ class GroqWhisperModel(TranscriptionModel):
 
         # AsyncGroq returns either a str (text format) or a BaseModel
         # depending on SDK version.
-        transcript = str(response) if isinstance(response, str) else response.text  # type: ignore[union-attr]
+        transcript = str(response) if isinstance(response, str) else response.text
         _logger.info(
             "llm.groq.transcribed",
             duration=audio.duration_seconds,

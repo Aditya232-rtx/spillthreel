@@ -16,8 +16,8 @@ from __future__ import annotations
 from app.observability.logging import get_logger
 from app.services.extractors.base import (
     Extractor,
-    ExtractResult,
     ExtractorError,
+    ExtractResult,
     NoExtractorSucceededError,
     Platform,
 )
@@ -32,9 +32,9 @@ def _build_registry() -> dict[Platform, list[Extractor]]:
     """Priority order per platform. First entry is tried first."""
     return {
         "instagram": [CobaltExtractor("instagram"), YtDlpExtractor("instagram")],
-        "tiktok":    [CobaltExtractor("tiktok"),    YtDlpExtractor("tiktok")],
-        "youtube":   [CobaltExtractor("youtube"),   YtDlpExtractor("youtube")],
-        "x":         [CobaltExtractor("x"),         YtDlpExtractor("x")],
+        "tiktok": [CobaltExtractor("tiktok"), YtDlpExtractor("tiktok")],
+        "youtube": [CobaltExtractor("youtube"), YtDlpExtractor("youtube")],
+        "x": [CobaltExtractor("x"), YtDlpExtractor("x")],
     }
 
 
@@ -71,6 +71,4 @@ async def extract(url: str) -> ExtractResult:
             last_error = e
             continue
 
-    raise NoExtractorSucceededError(
-        f"all extractors failed for {url}: last_error={last_error}"
-    )
+    raise NoExtractorSucceededError(f"all extractors failed for {url}: last_error={last_error}")

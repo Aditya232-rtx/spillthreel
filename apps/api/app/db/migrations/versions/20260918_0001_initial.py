@@ -67,7 +67,12 @@ def upgrade() -> None:
     op.create_table(
         "items",
         sa.Column("id", sa.String(), primary_key=True),  # ULID
-        sa.Column("user_id", postgresql.UUID(as_uuid=False), sa.ForeignKey("profiles.id", ondelete="CASCADE"), nullable=False),
+        sa.Column(
+            "user_id",
+            postgresql.UUID(as_uuid=False),
+            sa.ForeignKey("profiles.id", ondelete="CASCADE"),
+            nullable=False,
+        ),
         sa.Column("source_url", sa.Text(), nullable=False),
         sa.Column("source_url_norm", sa.Text(), nullable=False),
         sa.Column("platform", sa.String(), nullable=False),
@@ -79,7 +84,12 @@ def upgrade() -> None:
         sa.Column("transcript", sa.Text()),
         sa.Column("on_screen_text", sa.Text()),
         sa.Column("caption", sa.Text()),
-        sa.Column("hashtags", postgresql.ARRAY(sa.String()), server_default=sa.text("'{}'::text[]"), nullable=False),
+        sa.Column(
+            "hashtags",
+            postgresql.ARRAY(sa.String()),
+            server_default=sa.text("'{}'::text[]"),
+            nullable=False,
+        ),
         sa.Column("owner_name", sa.String()),
         sa.Column("owner_username", sa.String()),
         sa.Column("owner_url", sa.String()),
@@ -87,8 +97,18 @@ def upgrade() -> None:
         sa.Column("thumbnail_url", sa.Text()),
         sa.Column("failure_reason", sa.Text()),
         sa.Column("cognee_id", sa.String()),
-        sa.Column("created_at", postgresql.TIMESTAMP(timezone=True), server_default=sa.text("now()"), nullable=False),
-        sa.Column("updated_at", postgresql.TIMESTAMP(timezone=True), server_default=sa.text("now()"), nullable=False),
+        sa.Column(
+            "created_at",
+            postgresql.TIMESTAMP(timezone=True),
+            server_default=sa.text("now()"),
+            nullable=False,
+        ),
+        sa.Column(
+            "updated_at",
+            postgresql.TIMESTAMP(timezone=True),
+            server_default=sa.text("now()"),
+            nullable=False,
+        ),
         sa.UniqueConstraint("user_id", "source_url_norm", name="items_user_url_unique"),
         sa.CheckConstraint(
             "state IN ('queued','downloading','analyzing','indexing',"
@@ -114,15 +134,30 @@ def upgrade() -> None:
     op.create_table(
         "categories",
         sa.Column("id", sa.String(), primary_key=True),
-        sa.Column("user_id", postgresql.UUID(as_uuid=False), sa.ForeignKey("profiles.id", ondelete="CASCADE"), nullable=False),
+        sa.Column(
+            "user_id",
+            postgresql.UUID(as_uuid=False),
+            sa.ForeignKey("profiles.id", ondelete="CASCADE"),
+            nullable=False,
+        ),
         sa.Column("name", sa.String(), nullable=False),
         sa.Column("source", sa.String(), nullable=False),
         sa.Column("bg_color", sa.String(), nullable=False),
         sa.Column("emoji", sa.String()),
         sa.Column("origin_id", sa.String()),
         sa.Column("centroid_id", sa.String()),
-        sa.Column("created_at", postgresql.TIMESTAMP(timezone=True), server_default=sa.text("now()"), nullable=False),
-        sa.Column("updated_at", postgresql.TIMESTAMP(timezone=True), server_default=sa.text("now()"), nullable=False),
+        sa.Column(
+            "created_at",
+            postgresql.TIMESTAMP(timezone=True),
+            server_default=sa.text("now()"),
+            nullable=False,
+        ),
+        sa.Column(
+            "updated_at",
+            postgresql.TIMESTAMP(timezone=True),
+            server_default=sa.text("now()"),
+            nullable=False,
+        ),
         sa.UniqueConstraint("user_id", "name", name="categories_user_name_unique"),
         sa.CheckConstraint("source IN ('auto','user','import')", name="categories_source_valid"),
     )
@@ -135,11 +170,23 @@ def upgrade() -> None:
 
     op.create_table(
         "item_categories",
-        sa.Column("item_id", sa.String(), sa.ForeignKey("items.id", ondelete="CASCADE"), primary_key=True),
-        sa.Column("category_id", sa.String(), sa.ForeignKey("categories.id", ondelete="CASCADE"), primary_key=True),
+        sa.Column(
+            "item_id", sa.String(), sa.ForeignKey("items.id", ondelete="CASCADE"), primary_key=True
+        ),
+        sa.Column(
+            "category_id",
+            sa.String(),
+            sa.ForeignKey("categories.id", ondelete="CASCADE"),
+            primary_key=True,
+        ),
         sa.Column("assigned_by", sa.String(), nullable=False),
         sa.Column("confidence", sa.Float()),
-        sa.Column("assigned_at", postgresql.TIMESTAMP(timezone=True), server_default=sa.text("now()"), nullable=False),
+        sa.Column(
+            "assigned_at",
+            postgresql.TIMESTAMP(timezone=True),
+            server_default=sa.text("now()"),
+            nullable=False,
+        ),
     )
     op.create_index("item_categories_category_idx", "item_categories", ["category_id"])
     op.execute("""
@@ -155,12 +202,27 @@ def upgrade() -> None:
     op.create_table(
         "collections",
         sa.Column("id", sa.String(), primary_key=True),
-        sa.Column("user_id", postgresql.UUID(as_uuid=False), sa.ForeignKey("profiles.id", ondelete="CASCADE"), nullable=False),
+        sa.Column(
+            "user_id",
+            postgresql.UUID(as_uuid=False),
+            sa.ForeignKey("profiles.id", ondelete="CASCADE"),
+            nullable=False,
+        ),
         sa.Column("name", sa.String(), nullable=False),
         sa.Column("privacy", sa.String(), nullable=False),
         sa.Column("source", sa.String(), nullable=False),
-        sa.Column("created_at", postgresql.TIMESTAMP(timezone=True), server_default=sa.text("now()"), nullable=False),
-        sa.Column("updated_at", postgresql.TIMESTAMP(timezone=True), server_default=sa.text("now()"), nullable=False),
+        sa.Column(
+            "created_at",
+            postgresql.TIMESTAMP(timezone=True),
+            server_default=sa.text("now()"),
+            nullable=False,
+        ),
+        sa.Column(
+            "updated_at",
+            postgresql.TIMESTAMP(timezone=True),
+            server_default=sa.text("now()"),
+            nullable=False,
+        ),
         sa.UniqueConstraint("user_id", "name", name="collections_user_name_unique"),
     )
     op.execute("""
@@ -172,9 +234,21 @@ def upgrade() -> None:
 
     op.create_table(
         "collection_items",
-        sa.Column("collection_id", sa.String(), sa.ForeignKey("collections.id", ondelete="CASCADE"), primary_key=True),
-        sa.Column("item_id", sa.String(), sa.ForeignKey("items.id", ondelete="CASCADE"), primary_key=True),
-        sa.Column("added_at", postgresql.TIMESTAMP(timezone=True), server_default=sa.text("now()"), nullable=False),
+        sa.Column(
+            "collection_id",
+            sa.String(),
+            sa.ForeignKey("collections.id", ondelete="CASCADE"),
+            primary_key=True,
+        ),
+        sa.Column(
+            "item_id", sa.String(), sa.ForeignKey("items.id", ondelete="CASCADE"), primary_key=True
+        ),
+        sa.Column(
+            "added_at",
+            postgresql.TIMESTAMP(timezone=True),
+            server_default=sa.text("now()"),
+            nullable=False,
+        ),
     )
     op.execute("""
         ALTER TABLE collection_items ENABLE ROW LEVEL SECURITY;
@@ -189,7 +263,12 @@ def upgrade() -> None:
     op.create_table(
         "imports",
         sa.Column("id", sa.String(), primary_key=True),
-        sa.Column("user_id", postgresql.UUID(as_uuid=False), sa.ForeignKey("profiles.id", ondelete="CASCADE"), nullable=False),
+        sa.Column(
+            "user_id",
+            postgresql.UUID(as_uuid=False),
+            sa.ForeignKey("profiles.id", ondelete="CASCADE"),
+            nullable=False,
+        ),
         sa.Column("state", sa.String(), nullable=False),
         sa.Column("total_parsed", sa.Integer(), server_default=sa.text("0"), nullable=False),
         sa.Column("text_indexed_done", sa.Integer(), server_default=sa.text("0"), nullable=False),
@@ -198,7 +277,12 @@ def upgrade() -> None:
         sa.Column("failed", sa.Integer(), server_default=sa.text("0"), nullable=False),
         sa.Column("parser_schema_hash", sa.String()),
         sa.Column("failure_reason", sa.Text()),
-        sa.Column("started_at", postgresql.TIMESTAMP(timezone=True), server_default=sa.text("now()"), nullable=False),
+        sa.Column(
+            "started_at",
+            postgresql.TIMESTAMP(timezone=True),
+            server_default=sa.text("now()"),
+            nullable=False,
+        ),
         sa.Column("finished_at", postgresql.TIMESTAMP(timezone=True)),
     )
     op.execute("""
@@ -214,7 +298,12 @@ def upgrade() -> None:
     op.create_table(
         "saved_audio",
         sa.Column("id", sa.String(), primary_key=True),
-        sa.Column("user_id", postgresql.UUID(as_uuid=False), sa.ForeignKey("profiles.id", ondelete="CASCADE"), nullable=False),
+        sa.Column(
+            "user_id",
+            postgresql.UUID(as_uuid=False),
+            sa.ForeignKey("profiles.id", ondelete="CASCADE"),
+            nullable=False,
+        ),
         sa.Column("source_type", sa.String(), nullable=False),
         sa.Column("title", sa.String()),
         sa.Column("artist", sa.String()),
@@ -234,11 +323,18 @@ def upgrade() -> None:
     op.create_table(
         "ingestion_events",
         sa.Column("id", sa.String(), primary_key=True),
-        sa.Column("item_id", sa.String(), sa.ForeignKey("items.id", ondelete="CASCADE"), nullable=False),
+        sa.Column(
+            "item_id", sa.String(), sa.ForeignKey("items.id", ondelete="CASCADE"), nullable=False
+        ),
         sa.Column("from_state", sa.String(), nullable=False),
         sa.Column("to_state", sa.String(), nullable=False),
         sa.Column("detail", postgresql.JSONB()),
-        sa.Column("at", postgresql.TIMESTAMP(timezone=True), server_default=sa.text("now()"), nullable=False),
+        sa.Column(
+            "at",
+            postgresql.TIMESTAMP(timezone=True),
+            server_default=sa.text("now()"),
+            nullable=False,
+        ),
     )
     op.execute("""
         ALTER TABLE ingestion_events ENABLE ROW LEVEL SECURITY;
@@ -251,10 +347,20 @@ def upgrade() -> None:
     # ------------------------------------------------------------------
     op.create_table(
         "push_tokens",
-        sa.Column("user_id", postgresql.UUID(as_uuid=False), sa.ForeignKey("profiles.id", ondelete="CASCADE"), primary_key=True),
+        sa.Column(
+            "user_id",
+            postgresql.UUID(as_uuid=False),
+            sa.ForeignKey("profiles.id", ondelete="CASCADE"),
+            primary_key=True,
+        ),
         sa.Column("token", sa.String(), primary_key=True),
         sa.Column("platform", sa.String(), nullable=False),
-        sa.Column("created_at", postgresql.TIMESTAMP(timezone=True), server_default=sa.text("now()"), nullable=False),
+        sa.Column(
+            "created_at",
+            postgresql.TIMESTAMP(timezone=True),
+            server_default=sa.text("now()"),
+            nullable=False,
+        ),
     )
     op.execute("""
         ALTER TABLE push_tokens ENABLE ROW LEVEL SECURITY;

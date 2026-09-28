@@ -20,8 +20,8 @@ from typing import Any
 
 from app.observability.logging import get_logger
 from app.services.extractors.base import (
-    ExtractResult,
     ExtractorError,
+    ExtractResult,
     Owner,
     Platform,
 )

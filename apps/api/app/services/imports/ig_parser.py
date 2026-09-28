@@ -20,12 +20,13 @@ from __future__ import annotations
 import hashlib
 import re
 import zipfile
+from collections.abc import Iterator
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Iterator
+from typing import TypedDict
 
-from bs4 import BeautifulSoup, Tag
+from bs4 import BeautifulSoup, PageElement, Tag
 
 from app.observability.logging import get_logger
 
@@ -46,6 +47,7 @@ class Owner:
 @dataclass(frozen=True)
 class SavedPost:
     """One entry from saved_posts.html or nested inside a collection."""
+
     url: str
     saved_at: datetime | None
     caption: str | None = None
@@ -57,6 +59,7 @@ class SavedPost:
 @dataclass(frozen=True)
 class SavedCollection:
     """One entry from saved_collections.html — a folder + members."""
+
     name: str
     type: str | None
     privacy: str | None
@@ -67,6 +70,7 @@ class SavedCollection:
 @dataclass(frozen=True)
 class SavedAudio:
     """One entry from saved_music.html."""
+
     title: str | None
     artist: str | None
     saved_at: datetime | None
@@ -76,6 +80,7 @@ class SavedAudio:
 class ParsedExport:
     """Aggregate over all three files. Post-parse the pipeline hands
     this off to ig_pipeline.process_import() (Phase 2 next commit)."""
+
     posts: tuple[SavedPost, ...]
     collections: tuple[SavedCollection, ...]
     audio: tuple[SavedAudio, ...]
@@ -135,9 +140,7 @@ def parse_zip(zip_path: Path) -> ParsedExport:
                 for a in _iter_saved_music(html):
                     audio.append(a)
 
-    schema_hash = hashlib.sha256(
-        ",".join(sorted(labels_seen)).encode("utf-8")
-    ).hexdigest()[:16]
+    schema_hash = hashlib.sha256(",".join(sorted(labels_seen)).encode("utf-8")).hexdigest()[:16]
 
     _logger.info(
         "ig_parser.done",
@@ -192,9 +195,7 @@ def _iter_saved_posts(html: bytes, labels_seen: set[str]) -> Iterator[SavedPost]
         )
 
 
-def _iter_saved_collections(
-    html: bytes, labels_seen: set[str]
-) -> Iterator[SavedCollection]:
+def _iter_saved_collections(html: bytes, labels_seen: set[str]) -> Iterator[SavedCollection]:
     """Yield SavedCollection per top-level entry in saved_collections.html."""
     soup = BeautifulSoup(html, "lxml")
     for entry in _iter_top_level_entries(soup, _ENTRY_SELECTOR):
@@ -224,7 +225,7 @@ def _iter_saved_collections(
                 # sub-block. Recurse into the innermost .pam wrappers
                 # (leaves) — each is a full media entry.
                 for nested in _iter_nested_media_blocks(value_cell):
-                    inner_table = nested.find("table")
+                    inner_table = _as_tag(nested.find("table"))
                     if inner_table is None:
                         continue
                     parsed = _parse_row_labels(inner_table, labels_seen)
@@ -287,12 +288,32 @@ def _iter_saved_music(html: bytes) -> Iterator[SavedAudio]:
 # ---------------------------------------------------------------------------
 
 
-def _parse_row_labels(table: Tag, labels_seen: set[str]) -> dict[str, object]:
+class _ParsedRow(TypedDict, total=False):
+    """Typed row labels — total=False because any label may be absent."""
+
+    __url__: str
+    caption: str | None
+    hashtags: list[str]
+    owner: Owner
+    __unknown__: list[str]
+
+
+def _as_tag(element: PageElement | None) -> Tag | None:
+    """Narrow a BeautifulSoup lookup to Tag.
+
+    find()/select_one() are typed as returning NavigableString too; real
+    export HTML only ever yields Tags here, and treating anything else as
+    absent matches the parser's schema-tolerance (skip, never crash).
+    """
+    return element if isinstance(element, Tag) else None
+
+
+def _parse_row_labels(table: Tag, labels_seen: set[str]) -> _ParsedRow:
     """Walk the entry's outer <table>, recognize labels, build a dict.
 
     Returns keys: __url__, caption, hashtags, owner, __unknown__.
     """
-    out: dict[str, object] = {}
+    out: _ParsedRow = {}
     unknown: list[str] = []
 
     for label, value_cell in _iter_label_value_cells(table):
@@ -301,9 +322,9 @@ def _parse_row_labels(table: Tag, labels_seen: set[str]) -> dict[str, object]:
 
         if lower.startswith("url"):
             # URL cell has an <a href> inside a nested <div>.
-            anchor = value_cell.find("a")
-            if anchor and anchor.has_attr("href"):
-                out["__url__"] = anchor["href"]
+            anchor = _as_tag(value_cell.find("a"))
+            if anchor is not None and anchor.has_attr("href"):
+                out["__url__"] = str(anchor["href"])
         elif lower == "caption":
             # Preserve line breaks — the caption may contain a multiline
             # recipe or thread.
@@ -371,7 +392,7 @@ def _iter_top_level_entries(soup: BeautifulSoup, selector: str) -> Iterator[Tag]
 
 
 def _first_child_table(entry: Tag) -> Tag | None:
-    return entry.find("table")
+    return _as_tag(entry.find("table"))
 
 
 def _iter_label_value_cells(table: Tag) -> Iterator[tuple[str, Tag]]:
@@ -390,7 +411,7 @@ def _iter_label_value_cells(table: Tag) -> Iterator[tuple[str, Tag]]:
             # an <h2> child heading — check for that first, then fall
             # back to the first line of separated text.
             if len(cells) == 1:
-                heading = cells[0].find("h2")
+                heading = _as_tag(cells[0].find("h2"))
                 if heading is not None:
                     label = heading.get_text(strip=True)
                 else:
@@ -425,7 +446,7 @@ def _iter_nested_media_blocks(cell: Tag) -> Iterator[Tag]:
           → <div class="pam uiBoxWhite noborder">      (outer Media section wrapper)
             → <h2>Media</h2>
             → <div class="_a6-p">                      (inner container)
-              → <div class="pam uiBoxWhite noborder"> × N  ← each is a media entry
+              → <div class="pam uiBoxWhite noborder"> x N  ← each is a media entry
                 → <div class="_a6-p">
                   → <table>                            ← the entry's table
 
@@ -434,15 +455,13 @@ def _iter_nested_media_blocks(cell: Tag) -> Iterator[Tag]:
     row). Only direct children of the inner container qualify as
     entry wrappers.
     """
-    outer_media = cell.select_one("div.pam.uiBoxWhite.noborder")
+    outer_media = _as_tag(cell.select_one("div.pam.uiBoxWhite.noborder"))
     if outer_media is None:
         return
-    inner = outer_media.find("div", class_="_a6-p", recursive=True)
+    inner = _as_tag(outer_media.find("div", class_="_a6-p", recursive=True))
     if inner is None:
         return
-    for entry in inner.find_all(
-        "div", class_="pam", recursive=False
-    ):
+    for entry in inner.find_all("div", class_="pam", recursive=False):
         if _has_url_row(entry):
             yield entry
 
@@ -462,11 +481,11 @@ def _has_url_row(node: Tag) -> bool:
 def _read_timestamp_sibling(entry: Tag) -> datetime | None:
     """The entry's saved-timestamp sits on a sibling `<div class='_a6-o'>`
     with a human-readable date string."""
-    sibling = entry.find_next_sibling("div", class_=_TIMESTAMP_CLASS)
+    sibling = _as_tag(entry.find_next_sibling("div", class_=_TIMESTAMP_CLASS))
     if sibling is None:
         # Fallback: the entry's own outer container may have it as a
         # descendant when Meta ships a different layout.
-        sibling = entry.find("div", class_=_TIMESTAMP_CLASS)
+        sibling = _as_tag(entry.find("div", class_=_TIMESTAMP_CLASS))
     if sibling is None:
         return None
     return _parse_meta_ts(sibling.get_text(strip=True))

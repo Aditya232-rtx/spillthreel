@@ -56,14 +56,20 @@ async def probe(src: Path) -> MediaProbe:
     """ffprobe → structured MediaProbe."""
     _require_binary(FFPROBE)
     cmd = [
-        FFPROBE, "-v", "error",
-        "-show_entries", "format=duration:stream=codec_type,width,height",
-        "-of", "json",
+        FFPROBE,
+        "-v",
+        "error",
+        "-show_entries",
+        "format=duration:stream=codec_type,width,height",
+        "-of",
+        "json",
         str(src),
     ]
     proc = await asyncio.to_thread(
-        subprocess.run, cmd,
-        capture_output=True, timeout=_SUBPROCESS_TIMEOUT_SECONDS,
+        subprocess.run,
+        cmd,
+        capture_output=True,
+        timeout=_SUBPROCESS_TIMEOUT_SECONDS,
     )
     if proc.returncode != 0:
         raise MediaError(f"ffprobe failed: {proc.stderr.decode()[:200]}")
@@ -93,18 +99,25 @@ async def sample_frames(
     out_dir.mkdir(parents=True, exist_ok=True)
     pattern = out_dir / "frame_%04d.jpg"
     cmd = [
-        FFMPEG, "-nostdin", "-y",
-        "-i", str(src),
+        FFMPEG,
+        "-nostdin",
+        "-y",
+        "-i",
+        str(src),
         # 1 frame every `interval_seconds`, capped to 720p to control Gemini
         # cost — sampling denser than that adds tokens without meaningfully
         # improving the summary.
-        "-vf", f"fps=1/{interval_seconds},scale=iw*min(1280/iw\\,720/ih):ih*min(1280/iw\\,720/ih)",
-        "-qscale:v", "3",
+        "-vf",
+        f"fps=1/{interval_seconds},scale=iw*min(1280/iw\\,720/ih):ih*min(1280/iw\\,720/ih)",
+        "-qscale:v",
+        "3",
         str(pattern),
     ]
     proc = await asyncio.to_thread(
-        subprocess.run, cmd,
-        capture_output=True, timeout=_SUBPROCESS_TIMEOUT_SECONDS,
+        subprocess.run,
+        cmd,
+        capture_output=True,
+        timeout=_SUBPROCESS_TIMEOUT_SECONDS,
     )
     if proc.returncode != 0:
         raise MediaError(f"ffmpeg frame-sample failed: {proc.stderr.decode()[:400]}")
@@ -125,17 +138,25 @@ async def extract_audio(src: Path, out: Path) -> Path:
     _require_binary(FFMPEG)
     out.parent.mkdir(parents=True, exist_ok=True)
     cmd = [
-        FFMPEG, "-nostdin", "-y",
-        "-i", str(src),
+        FFMPEG,
+        "-nostdin",
+        "-y",
+        "-i",
+        str(src),
         "-vn",  # no video
-        "-ac", "1",  # mono
-        "-ar", "16000",  # 16kHz
-        "-c:a", "pcm_s16le",
+        "-ac",
+        "1",  # mono
+        "-ar",
+        "16000",  # 16kHz
+        "-c:a",
+        "pcm_s16le",
         str(out),
     ]
     proc = await asyncio.to_thread(
-        subprocess.run, cmd,
-        capture_output=True, timeout=_SUBPROCESS_TIMEOUT_SECONDS,
+        subprocess.run,
+        cmd,
+        capture_output=True,
+        timeout=_SUBPROCESS_TIMEOUT_SECONDS,
     )
     if proc.returncode != 0:
         raise MediaError(f"ffmpeg audio-extract failed: {proc.stderr.decode()[:400]}")
@@ -156,17 +177,26 @@ async def make_thumbnail(src: Path, out: Path, at_seconds: float | None = None) 
         at_seconds = max(0.0, p.duration_seconds * 0.5)
 
     cmd = [
-        FFMPEG, "-nostdin", "-y",
-        "-ss", f"{at_seconds:.3f}",
-        "-i", str(src),
-        "-vframes", "1",
-        "-vf", "scale=720:-2",  # 720px wide, preserve aspect
-        "-qscale:v", "3",
+        FFMPEG,
+        "-nostdin",
+        "-y",
+        "-ss",
+        f"{at_seconds:.3f}",
+        "-i",
+        str(src),
+        "-vframes",
+        "1",
+        "-vf",
+        "scale=720:-2",  # 720px wide, preserve aspect
+        "-qscale:v",
+        "3",
         str(out),
     ]
     proc = await asyncio.to_thread(
-        subprocess.run, cmd,
-        capture_output=True, timeout=_SUBPROCESS_TIMEOUT_SECONDS,
+        subprocess.run,
+        cmd,
+        capture_output=True,
+        timeout=_SUBPROCESS_TIMEOUT_SECONDS,
     )
     if proc.returncode != 0:
         raise MediaError(f"ffmpeg thumbnail failed: {proc.stderr.decode()[:400]}")

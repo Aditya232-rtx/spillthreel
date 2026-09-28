@@ -7,7 +7,7 @@ an Alembic revision with `alembic revision --autogenerate`.
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any
+from typing import Any, ClassVar
 
 from sqlalchemy import (
     ARRAY,
@@ -28,14 +28,13 @@ from sqlalchemy.orm import (
     Mapped,
     MappedAsDataclass,
     mapped_column,
-    relationship,
 )
 
 
 class Base(DeclarativeBase, MappedAsDataclass):
     """Base for all ORM models — dataclass style for cleaner constructors."""
 
-    type_annotation_map = {dict[str, Any]: JSON}
+    type_annotation_map: ClassVar[dict[type, Any]] = {dict[str, Any]: JSON}
 
 
 # ---------------------------------------------------------------------------
@@ -67,9 +66,7 @@ class Profile(Base):
         server_default=text("now()"),
         init=False,
     )
-    deleted_at: Mapped[datetime | None] = mapped_column(
-        TIMESTAMP(timezone=True), default=None
-    )
+    deleted_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), default=None)
 
 
 # ---------------------------------------------------------------------------
@@ -110,7 +107,9 @@ class Item(Base):
     platform: Mapped[str] = mapped_column(String, nullable=False)
     state: Mapped[str] = mapped_column(String, nullable=False)
     saved_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False)
-    source_type: Mapped[str] = mapped_column(String, nullable=False)  # 'share_extension' | 'instagram_import'
+    source_type: Mapped[str] = mapped_column(
+        String, nullable=False
+    )  # 'share_extension' | 'instagram_import'
 
     title: Mapped[str | None] = mapped_column(Text, default=None)
     summary: Mapped[str | None] = mapped_column(Text, default=None)
@@ -146,9 +145,7 @@ class Category(Base):
     __tablename__ = "categories"
     __table_args__ = (
         UniqueConstraint("user_id", "name", name="categories_user_name_unique"),
-        CheckConstraint(
-            "source IN ('auto','user','import')", name="categories_source_valid"
-        ),
+        CheckConstraint("source IN ('auto','user','import')", name="categories_source_valid"),
     )
 
     id: Mapped[str] = mapped_column(String, primary_key=True)
@@ -173,9 +170,7 @@ class Category(Base):
 
 class ItemCategory(Base):
     __tablename__ = "item_categories"
-    __table_args__ = (
-        Index("item_categories_category_idx", "category_id"),
-    )
+    __table_args__ = (Index("item_categories_category_idx", "category_id"),)
 
     item_id: Mapped[str] = mapped_column(
         String, ForeignKey("items.id", ondelete="CASCADE"), primary_key=True
@@ -183,7 +178,9 @@ class ItemCategory(Base):
     category_id: Mapped[str] = mapped_column(
         String, ForeignKey("categories.id", ondelete="CASCADE"), primary_key=True
     )
-    assigned_by: Mapped[str] = mapped_column(String, nullable=False)  # 'classifier' | 'user' | 'import'
+    assigned_by: Mapped[str] = mapped_column(
+        String, nullable=False
+    )  # 'classifier' | 'user' | 'import'
     confidence: Mapped[float | None] = mapped_column(Float, default=None)
     assigned_at: Mapped[datetime] = mapped_column(
         TIMESTAMP(timezone=True), server_default=text("now()"), init=False
@@ -195,9 +192,7 @@ class ItemCategory(Base):
 # ---------------------------------------------------------------------------
 class Collection(Base):
     __tablename__ = "collections"
-    __table_args__ = (
-        UniqueConstraint("user_id", "name", name="collections_user_name_unique"),
-    )
+    __table_args__ = (UniqueConstraint("user_id", "name", name="collections_user_name_unique"),)
 
     id: Mapped[str] = mapped_column(String, primary_key=True)
     user_id: Mapped[str] = mapped_column(
@@ -205,7 +200,9 @@ class Collection(Base):
     )
     name: Mapped[str] = mapped_column(String, nullable=False)
     privacy: Mapped[str] = mapped_column(String, nullable=False)
-    source: Mapped[str] = mapped_column(String, nullable=False)  # 'instagram_import' | 'user_created'
+    source: Mapped[str] = mapped_column(
+        String, nullable=False
+    )  # 'instagram_import' | 'user_created'
     created_at: Mapped[datetime] = mapped_column(
         TIMESTAMP(timezone=True), server_default=text("now()"), init=False
     )
@@ -238,7 +235,9 @@ class Import(Base):
     user_id: Mapped[str] = mapped_column(
         String, ForeignKey("profiles.id", ondelete="CASCADE"), nullable=False
     )
-    state: Mapped[str] = mapped_column(String, nullable=False)  # 'parsing' | 'indexing' | 'complete' | 'failed'
+    state: Mapped[str] = mapped_column(
+        String, nullable=False
+    )  # 'parsing' | 'indexing' | 'complete' | 'failed'
     total_parsed: Mapped[int] = mapped_column(Integer, server_default=text("0"), default=0)
     text_indexed_done: Mapped[int] = mapped_column(Integer, server_default=text("0"), default=0)
     full_queued: Mapped[int] = mapped_column(Integer, server_default=text("0"), default=0)
@@ -249,9 +248,7 @@ class Import(Base):
     started_at: Mapped[datetime] = mapped_column(
         TIMESTAMP(timezone=True), server_default=text("now()"), init=False
     )
-    finished_at: Mapped[datetime | None] = mapped_column(
-        TIMESTAMP(timezone=True), default=None
-    )
+    finished_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), default=None)
 
 
 # ---------------------------------------------------------------------------
@@ -267,9 +264,7 @@ class SavedAudio(Base):
     source_type: Mapped[str] = mapped_column(String, nullable=False)
     title: Mapped[str | None] = mapped_column(String, default=None)
     artist: Mapped[str | None] = mapped_column(String, default=None)
-    saved_at: Mapped[datetime | None] = mapped_column(
-        TIMESTAMP(timezone=True), default=None
-    )
+    saved_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), default=None)
 
 
 class IngestionEvent(Base):
