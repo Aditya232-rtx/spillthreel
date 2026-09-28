@@ -3,6 +3,7 @@ import { Pressable, ScrollView, Text, View } from 'react-native';
 import { useRouter } from 'expo-router';
 import { Svg, Circle, Line } from 'react-native-svg';
 import { Shadowed } from '@/components/Shadowed';
+import { AvatarView } from '@/components/AvatarView';
 import { CHART_BARS, COLLECTION_RAILS, RECENT_THUMBS } from '@/data/homeData';
 import { useAuth } from '@/hooks/useAuth';
 import { getFirstName } from '@/lib/display-name';
@@ -99,19 +100,8 @@ export default function HomeScreen() {
         </Text>
         <Pressable onPress={() => router.push('/(app)/profile')}>
           <Shadowed offset={3} shadowColor={color.coral} radius={radius.pill}>
-            <View
-              style={{
-                width: 44,
-                height: 44,
-                borderRadius: radius.pill,
-                backgroundColor: color.ink,
-                borderWidth: border.bold,
-                borderColor: color.ink,
-                alignItems: 'center',
-                justifyContent: 'center',
-              }}
-            >
-              <Text style={{ fontFamily: font.display, fontSize: 17, color: color.cream }}>{initial}</Text>
+            <View>
+              <AvatarView user={user} size={44} fallbackLetter={initial} backgroundColor={color.ink} />
               {needsVerify && !dismissed ? (
                 <View
                   style={{

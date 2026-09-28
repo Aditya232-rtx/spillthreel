@@ -40,6 +40,20 @@ export function getFullName(user: User | null): string | null {
   return null;
 }
 
+/**
+ * The user's explicitly chosen name, if any. Stored as a SEPARATE metadata
+ * key (`custom_name`) that OAuth providers never touch — unlike full_name,
+ * which providers overwrite on every sign-in. This is the durable,
+ * reinstall-proof, cross-device source of truth for "the name they set".
+ */
+export function getCustomName(user: User | null): string | null {
+  const raw = user?.user_metadata?.custom_name;
+  if (typeof raw === 'string' && raw.trim()) {
+    return raw.trim();
+  }
+  return null;
+}
+
 /** First name for greetings ("Aditya Jadhav" → "Aditya"). */
 export function getFirstName(user: User | null): string {
   const full = getFullName(user);

@@ -87,7 +87,9 @@ export default function SignupScreen() {
         const typedName = name.trim();
         const storedName = retry.session.user?.user_metadata?.full_name;
         if (typedName && typedName !== storedName) {
-          await supabase.auth.updateUser({ data: { full_name: typedName } });
+          await supabase.auth.updateUser({
+            data: { full_name: typedName, custom_name: typedName },
+          });
         }
         if (typedName) {
           await rememberDisplayName(email.trim(), typedName);

@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Image, ScrollView, Text, View } from 'react-native';
 import { useRouter } from 'expo-router';
 import { AmbientDot } from '@/components/AmbientDot';
@@ -6,7 +6,12 @@ import { Badge } from '@/components/Badge';
 import { PillButton } from '@/components/PillButton';
 import { TextField } from '@/components/TextField';
 import { useAuth } from '@/hooks/useAuth';
-import { getFullName, rememberDisplayName } from '@/lib/display-name';
+import {
+  getCustomName,
+  getFullName,
+  getRememberedDisplayName,
+  rememberDisplayName,
+} from '@/lib/display-name';
 import { supabase } from '@/lib/supabase';
 import { color, font, fontSize, space } from '@/theme/tokens';
 
@@ -24,6 +29,25 @@ export default function YourNameScreen() {
   const [submitting, setSubmitting] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
+  // Prefill priority: server-side custom choice, then the remembered
+  // device choice, and only then the provider name. Otherwise one
+  // Continue tap here re-blesses the provider name and destroys a custom
+  // name set earlier.
+  useEffect(() => {
+    if (name !== null) return;
+    const serverChoice = getCustomName(user);
+    if (serverChoice) {
+      setName(serverChoice);
+      return;
+    }
+    if (!user?.email) return;
+    getRememberedDisplayName(user.email).then((remembered) => {
+      if (remembered) {
+        setName(remembered);
+      }
+    });
+  }, [name, user]);
+
   const value = name ?? getFullName(user) ?? '';
 
   async function handleContinue(skip = false): Promise<void> {
@@ -35,11 +59,17 @@ export default function YourNameScreen() {
     setSubmitting(true);
     setErrorMessage(null);
     if (!skip && trimmed) {
-      const { error } = await supabase.auth.updateUser({ data: { full_name: trimmed } });
-      if (error) {
-        setSubmitting(false);
-        setErrorMessage(error.message);
-        return;
+      // Skip the write when nothing changed — avoids redundant updates
+      // and accidental override-clobbering.
+      if (trimmed !== getFullName(user)) {
+        const { error } = await supabase.auth.updateUser({
+          data: { full_name: trimmed, custom_name: trimmed },
+        });
+        if (error) {
+          setSubmitting(false);
+          setErrorMessage(error.message);
+          return;
+        }
       }
       if (user?.email) {
         await rememberDisplayName(user.email, trimmed);

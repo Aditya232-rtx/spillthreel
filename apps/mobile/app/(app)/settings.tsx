@@ -5,13 +5,15 @@ import { PillButton } from '@/components/PillButton';
 import { SettingsRowView } from '@/components/SettingsRowView';
 import { DEFAULT_TOGGLE_STATE, SETTINGS_GROUPS } from '@/data/settings';
 import { useAuth } from '@/hooks/useAuth';
+import { AvatarView } from '@/components/AvatarView';
+import { getFirstName } from '@/lib/display-name';
 import { border, color, font, radius, space } from '@/theme/tokens';
 
 const TOAST_DURATION_MS = 2200;
 
 export default function SettingsScreen() {
   const router = useRouter();
-  const { signOut } = useAuth();
+  const { signOut, user } = useAuth();
   const [toggles, setToggles] = useState(DEFAULT_TOGGLE_STATE);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
@@ -50,10 +52,14 @@ export default function SettingsScreen() {
       <ScrollView contentContainerStyle={{ paddingHorizontal: 18, paddingTop: 54, paddingBottom: 130, gap: space.lg }}>
         <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
           <Text style={{ fontFamily: font.display, fontSize: 30, color: color.ink }}>SETTINGS</Text>
-          <Pressable
-            onPress={() => router.push('/(app)/profile')}
-            style={{ width: 32, height: 32, borderRadius: radius.pill, backgroundColor: color.violet, borderWidth: border.standard, borderColor: color.ink }}
-          />
+          <Pressable onPress={() => router.push('/(app)/profile')} accessibilityLabel="Open profile">
+            <AvatarView
+              user={user}
+              size={32}
+              fallbackLetter={(getFirstName(user)[0] ?? 'S').toUpperCase()}
+              backgroundColor={color.violet}
+            />
+          </Pressable>
         </View>
 
         {SETTINGS_GROUPS.map((group) => (

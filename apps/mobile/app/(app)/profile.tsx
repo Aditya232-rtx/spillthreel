@@ -1,12 +1,18 @@
 import { useState } from 'react';
-import { Pressable, ScrollView, Text, View } from 'react-native';
+import { Modal, Pressable, ScrollView, Text, View } from 'react-native';
 import { useRouter } from 'expo-router';
-import { Svg, Polyline } from 'react-native-svg';
+import { Svg, Path, Polyline } from 'react-native-svg';
 import { Shadowed } from '@/components/Shadowed';
+import { AvatarView } from '@/components/AvatarView';
 import { CONNECTED_SOURCES } from '@/data/profile';
 import { PillButton } from '@/components/PillButton';
 import { TextField } from '@/components/TextField';
 import { useAuth } from '@/hooks/useAuth';
+import {
+  AVATAR_PRESETS,
+  getAvatarChoice,
+  rememberAvatarChoice,
+} from '@/lib/avatar';
 import { getFirstName, getFullName, rememberDisplayName } from '@/lib/display-name';
 import { supabase } from '@/lib/supabase';
 import { alpha, border, color, font, radius, space } from '@/theme/tokens';
@@ -29,11 +35,27 @@ export default function ProfileScreen() {
   const [draftName, setDraftName] = useState('');
   const [saving, setSaving] = useState(false);
   const [nameError, setNameError] = useState<string | null>(null);
+  const [avatarPickerOpen, setAvatarPickerOpen] = useState(false);
+  const [savingAvatar, setSavingAvatar] = useState(false);
+  const chosenAvatar = getAvatarChoice(user);
 
   function beginEditName(): void {
     setDraftName(fullName === 'friend' ? '' : fullName);
     setNameError(null);
     setEditingName(true);
+  }
+
+  async function chooseAvatar(id: string): Promise<void> {
+    if (savingAvatar) return;
+    setSavingAvatar(true);
+    const { error } = await supabase.auth.updateUser({ data: { avatar: id } });
+    if (!error && user?.email) {
+      await rememberAvatarChoice(user.email, id);
+    }
+    setSavingAvatar(false);
+    if (!error) {
+      setAvatarPickerOpen(false);
+    }
   }
 
   async function saveName(): Promise<void> {
@@ -44,7 +66,9 @@ export default function ProfileScreen() {
     }
     setSaving(true);
     setNameError(null);
-    const { error } = await supabase.auth.updateUser({ data: { full_name: trimmed } });
+    const { error } = await supabase.auth.updateUser({
+      data: { full_name: trimmed, custom_name: trimmed },
+    });
     if (error) {
       setSaving(false);
       setNameError(error.message);
@@ -97,11 +121,40 @@ export default function ProfileScreen() {
       </View>
 
       <View style={{ alignItems: 'center', gap: 6 }}>
-        <Shadowed offset={4} shadowColor={color.gold} radius={radius.pill}>
-          <View style={{ width: 92, height: 92, borderRadius: radius.pill, backgroundColor: color.violet, borderWidth: border.heavy, borderColor: color.ink, alignItems: 'center', justifyContent: 'center' }}>
-            <Text style={{ fontFamily: font.display, fontSize: 34, color: color.cream }}>{initial}</Text>
-          </View>
-        </Shadowed>
+        <Pressable onPress={() => setAvatarPickerOpen(true)} accessibilityLabel="Change avatar">
+          <Shadowed offset={4} shadowColor={color.gold} radius={radius.pill}>
+            <View>
+              <AvatarView user={user} size={92} fallbackLetter={initial} backgroundColor={color.violet} />
+              {/* Pen badge */}
+              <View
+                style={{
+                  position: 'absolute',
+                  bottom: 0,
+                  right: 0,
+                  width: 30,
+                  height: 30,
+                  borderRadius: 15,
+                  backgroundColor: color.ink,
+                  borderWidth: 2,
+                  borderColor: color.cream,
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                }}
+              >
+                <Svg width={14} height={14} viewBox="0 0 24 24">
+                  <Path
+                    d="M5 19l1.2-4.2L16.7 4.3a1.5 1.5 0 0 1 2.1 0l.9.9a1.5 1.5 0 0 1 0 2.1L9.2 17.8 5 19z"
+                    fill="none"
+                    stroke={color.cream}
+                    strokeWidth={2}
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                  />
+                </Svg>
+              </View>
+            </View>
+          </Shadowed>
+        </Pressable>
         {editingName ? (
           <View style={{ width: '100%', gap: space.sm, marginTop: space.sm }}>
             <TextField
@@ -207,6 +260,70 @@ export default function ProfileScreen() {
       >
         Import more from Instagram
       </Text>
+
+      <Modal
+        visible={avatarPickerOpen}
+        transparent
+        animationType="slide"
+        onRequestClose={() => setAvatarPickerOpen(false)}
+      >
+        <View style={{ flex: 1, backgroundColor: 'rgba(21,23,15,0.5)', justifyContent: 'flex-end' }}>
+          <Pressable
+            onPress={() => setAvatarPickerOpen(false)}
+            accessibilityLabel="Close avatar picker"
+            style={{ flex: 1 }}
+          />
+          <View
+            style={{
+              backgroundColor: color.cream,
+              borderTopLeftRadius: 28,
+              borderTopRightRadius: 28,
+              borderWidth: 2,
+              borderBottomWidth: 0,
+              borderColor: color.ink,
+              paddingHorizontal: space.xl,
+              paddingTop: space.md,
+              paddingBottom: 40,
+              maxHeight: '72%',
+            }}
+          >
+            <View style={{ width: 40, height: 4, borderRadius: 2, backgroundColor: 'rgba(21,23,15,0.25)', alignSelf: 'center', marginBottom: space.md }} />
+            <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: space.md }}>
+              <Text style={{ fontFamily: font.display, fontSize: 18, color: color.ink }}>CHOOSE AVATAR</Text>
+              <Pressable onPress={() => setAvatarPickerOpen(false)} hitSlop={8} accessibilityLabel="Close">
+                <Text style={{ fontSize: 18, color: 'rgba(21,23,15,0.6)' }}>✕</Text>
+              </Pressable>
+            </View>
+            <ScrollView contentContainerStyle={{ flexDirection: 'row', flexWrap: 'wrap', gap: 12, justifyContent: 'center', paddingBottom: 8 }}>
+              {AVATAR_PRESETS.map((preset) => {
+                const selected = preset.id === chosenAvatar;
+                return (
+                  <Pressable
+                    key={preset.id}
+                    onPress={() => chooseAvatar(preset.id)}
+                    disabled={savingAvatar}
+                    accessibilityLabel={`Use avatar ${preset.id}`}
+                    style={{
+                      width: 68,
+                      height: 68,
+                      borderRadius: 34,
+                      backgroundColor: color.cream,
+                      borderWidth: selected ? 3 : 2,
+                      borderColor: selected ? color.coral : color.ink,
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      overflow: 'hidden',
+                      opacity: savingAvatar ? 0.6 : 1,
+                    }}
+                  >
+                    <preset.Component width={60} height={60} />
+                  </Pressable>
+                );
+              })}
+            </ScrollView>
+          </View>
+        </View>
+      </Modal>
     </ScrollView>
   );
 }

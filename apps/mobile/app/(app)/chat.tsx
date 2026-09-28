@@ -287,8 +287,11 @@ export default function ChatScreen() {
       >
         {messages.length === 0 && !thinkingFor ? (
           <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', gap: space.sm, paddingBottom: 40 }}>
-            <Text style={{ fontFamily: font.script, fontSize: 26, color: alpha(color.cream, 0.9), textAlign: 'center' }}>
-              Ask your second brain anything.
+            {/* NOTE: Oswald ships without an italic file — fontStyle italic
+                is synthesized. If the emulator ever falls back to system
+                sans here, that's the renderer, not the style. */}
+            <Text style={{ fontFamily: font.displayMedium, fontStyle: 'italic', fontSize: 22, lineHeight: 30, color: alpha(color.cream, 0.9), textAlign: 'center', paddingHorizontal: 24 }}>
+              Nothing is ever truly lost.
             </Text>
             <Text style={{ fontFamily: font.body, fontSize: 12.5, color: alpha(color.cream, 0.55), textAlign: 'center' }}>
               Your saves become searchable answers here.
