@@ -1,5 +1,45 @@
 # Changelog
 
+## Unreleased — Phase 0 completion (infra, builds, observability)
+
+Why: application code was ahead of Phase 0 while infrastructure sat at zero —
+no local-dev entrypoint, no builds, no error/analytics tooling, no CI, no
+Terraform. This closes the Phase 0 exit criteria that don't need cloud
+credentials or human-owned accounts.
+
+- **Local dev**: `scripts/local-dev.sh` (docker check, env bootstrap,
+  compose up, health wait, URL printout); compose rewritten around Supabase
+  vars (Firebase leftovers dropped); separate gitignored
+  `apps/api/.env.staging` + `apps/mobile/.env.staging` beside prod `.env`
+  files; `EXPO_PUBLIC_API_URL` wiring; `SENTRY_RELEASE`/`GIT_SHA` settings.
+- **EAS (Android only)**: `expo-dev-client` installed, `eas.json` with
+  development/preview/production profiles (APK/APK/AAB), remote version
+  source. Note: Expo Go no longer loads the app — Android runs as a dev
+  build (`npx expo run:android`).
+- **Sentry**: manual setup both sides, no-op without DSN, PII off,
+  request/URL/token scrubbers, env + release tags, `Sentry.wrap` on mobile;
+  source-map upload only with `SENTRY_AUTH_TOKEN`. Health probe contract
+  pinned by `test_health.py`.
+- **PostHog**: mobile provider gated on key, autocapture + replay off, typed
+  `track()` with prop scrubbing (schema TBD), identify by Supabase id,
+  reset on sign-out.
+- **CI**: api-ci (uv, ruff check + format, mypy, pytest), mobile-ci (tsc,
+  non-blocking doctor), terraform-plan (fmt + validate always; real plan
+  gated on `GCP_ENABLED` via WIF), eas-preview (manual dispatch only),
+  dependabot weekly, PR template. Secrets/variables documented in README.
+- **Terraform (write-only, never applied)**: `artifact_registry`,
+  `cloud_run_service` (api/worker/cobalt, scale-to-zero, cost caps),
+  `secret_manager` (empty shells only), `cloud_tasks` (3 throttled queues),
+  `workload_identity_github`. Dropped post-Supabase: Cloud SQL, Storage
+  buckets, VPC connector, Cloud CDN. Cobalt on Cloud Run (not GKE) for
+  staging, with a documented switch trigger. `fmt` + `validate` pass.
+- **Lint/type debt paid**: ruff + format clean tree-wide, mypy 28→0 (real
+  `jwt.decode` bug found in ratelimit, `ulid.new()`, StrEnum, parser
+  narrowing with fixture check, per-module ignore for stub-less `yt_dlp`).
+- **Docs**: root README (product, quickstart, env tables, CI, EAS,
+  Terraform-not-applied, observability); `expo-share-intent` registered as
+  a no-op Android config plugin (handler wiring is Phase 3).
+
 ## Unreleased — Production-grade authentication
 
 Why: the auth plumbing (Supabase JWT verify, PKCE OAuth, AuthGate) worked,

@@ -1,0 +1,10 @@
+# Copy to terraform.tfvars and fill in. NEVER commit terraform.tfvars.
+project_id           = "your-staging-project-id"
+region               = "asia-south1"
+state_bucket         = "your-tfstate-bucket"
+github_repo          = "Aditya232-rtx/spillthreel"
+supabase_url         = "https://txwueqvzftiftmmfyeqt.supabase.co"
+cors_allowed_origins = "https://staging.example.com"
+# Publishable key is public by design, but keep it out of the repo anyway:
+# pass with -var or TF_VAR_ instead of writing it here.
+# supabase_publishable_key = "sb_publishable_..."
