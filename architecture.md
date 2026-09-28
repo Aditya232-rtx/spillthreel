@@ -1,17 +1,39 @@
 # SpillTheReel — Architecture Document
 
-**Version:** 1.0
-**Status:** Draft — pre-build
+**Version:** 1.1
+**Status:** Draft — pre-build (Supabase migration applied)
 **Owner:** Aditya Jadhav
-**Last updated:** 2026-09-10
+**Last updated:** 2026-09-26
 
 Companion documents: [prd.md](./prd.md), [trd.md](./trd.md), [buildphase.md](./buildphase.md).
+
+> **2026-09-18 migration note:** the stateful layer moved from Firebase Auth +
+> Cloud SQL + Cloud Storage to **Supabase Auth + Postgres + Storage**. Any
+> remaining Firebase/Cloud SQL/GCS wording elsewhere in the repo is stale —
+> this document, the TRD, and the code are Supabase-based.
 
 ---
 
 ## 1. Purpose
 
 Whereas the TRD documents *what* we use, this document documents *how it fits together*: the runtime topology, the data-flow paths for every user-facing scenario, the service boundaries, the directory layout of the monorepo, and the deployment topology. Read this to understand the system as a whole; read the TRD to understand the internals of any single component.
+
+### 1.1 Vendor map (two vendors, clear split)
+
+| Concern | Owner | Notes |
+|---|---|---|
+| Auth (Google/Apple/Email, JWTs) | **Supabase Auth** | Asymmetric ES256, offline verify via public JWKS |
+| Relational data + RLS | **Supabase Postgres** | `auth.users` is the identity root; app tables key off it |
+| Thumbnails, GDPR exports | **Supabase Storage** | `media` + `exports` buckets, signed URLs, RLS-scoped |
+| API + workers compute | **GCP Cloud Run** | Same FastAPI codebase, two entrypoints |
+| Job queues | **GCP Cloud Tasks** | `ingest`, `import`, `enhance` queues |
+| Media extraction | **GKE Autopilot (Cobalt)** | Upstream image, internal LB, called by workers only |
+| Memory / RAG | **Cognee Cloud** | Per-user namespaces |
+| Multimodal LLM / ASR | **Gemini / Groq** | |
+
+There is deliberately **no** Cloud SQL, Cloud Storage, Firebase, Firestore, or
+localstack in this architecture — the stateful layer is 100% Supabase Cloud
+(local Postgres in docker-compose is schema-compatible dev stand-in only).
 
 ---
 
@@ -53,7 +75,7 @@ Whereas the TRD documents *what* we use, this document documents *how it fits to
      ┌─────────────────┐        ┌────────────────────┐  ┌───────────────┐    ┌────────────────┐
      │ Supabase Auth   │        │ Supabase Postgres  │  │ Cloud Tasks   │    │ Cognee Cloud   │
      │ (JWT offline    │        │ (RLS-scoped,       │  │ 3 queues:     │    │ (memory / RAG) │
-     │  verify — HS256)│        │  auth.uid()=user)  │  │ ingest, import│    │  per-user      │
+     │ ES256/JWKS)     │        │  auth.uid()=user)  │  │ ingest, import│    │  per-user      │
      └─────────────────┘        └────────────────────┘  │ enhance       │    │  namespaces    │
                                                         └───────┬───────┘    └────────────────┘
                                                             │                          ▲
@@ -111,7 +133,7 @@ There are three deployable units:
 
 3. **`cobalt`** (GKE Autopilot) — self-hosted media extractor. Called by workers only. Stateless. Upstream image unmodified.
 
-External managed services: Firebase Auth, Cloud SQL, Cloud Tasks, Cloud Storage, Cognee Cloud, Gemini API, Groq API, PostHog, Sentry, Expo push service.
+External managed services: Supabase Auth + Postgres + Storage (one vendor for the stateful layer), Cloud Tasks, Cognee Cloud, Gemini API, Groq API, PostHog, Sentry, Expo push service. GCP keeps compute + queues (Cloud Run, Cloud Tasks, GKE for Cobalt); there is no Cloud SQL / Cloud Storage / Firebase in this architecture anymore.
 
 ---
 
@@ -124,7 +146,7 @@ User taps Share in Instagram
         │
         ▼
 Android ShareIntentReceiver activity
-  reads Firebase ID token from EncryptedSharedPreferences
+  reads Supabase access JWT from EncryptedSharedPreferences
         │
         ▼
 POST https://api.spillthereel.app/v1/saves
@@ -134,11 +156,11 @@ POST https://api.spillthereel.app/v1/saves
 Cloud Load Balancer → Cloud Run api
         │
         ▼
-FastAPI middleware verifies Firebase ID token
+FastAPI middleware verifies Supabase JWT offline (ES256 via JWKS)
         │
         ▼
 POST /v1/saves handler:
-  1. Normalize URL, detect platform.
+  1. Normalize URL, detect platform. Rate-limit check (slowapi).
   2. INSERT INTO items (state='queued') — returns item_id.
      ON CONFLICT: return existing item_id + duplicateOf.
   3. Enqueue Cloud Task: ingest{item_id}.
@@ -159,7 +181,7 @@ Worker.ingest(item_id):
   4. If duration < 5 min: Gemini multimodal call with frames + audio.
      If ≥ 5 min: Groq Whisper transcribe → Gemini with frames + transcript.
   5. Parse StructuredSummary, validate.
-  6. Upload thumbnail to GCS.
+   6. Upload thumbnail to Supabase Storage (`media` bucket, signed URL).
   7. Cognee.write(namespace=user_id, item=indexed).
   8. UPDATE items state='fully_indexed', fill summary/transcript/etc.
   9. INSERT ingestion_events row.
@@ -262,7 +284,7 @@ DELETE /v1/me
         │
         ▼
 api:
-  1. Mark users.deleted_at = now (soft flag; blocks further logins).
+  1. Mark profiles.deleted_at = now (soft flag; further calls 403).
   2. Enqueue Cloud Task delete_user{user_id}.
   3. Respond 202.
         │
@@ -271,10 +293,10 @@ Worker.delete_user:
   1. Cognee.delete_namespace(user_id).
   2. DELETE FROM items WHERE user_id=... (cascades to collection_items, ingestion_events).
   3. DELETE FROM collections, saved_audio, imports, push_tokens.
-  4. Enumerate GCS prefix media/{user_id}/ and delete.
-  5. firebase_admin.auth.delete_user(firebase_uid).
-  6. DELETE FROM users.
-  7. Emit final analytics event.
+  4. Enumerate Supabase Storage prefix media/{user_id}/ and delete.
+  5. DELETE FROM auth.users (Supabase admin API) — cascades to profiles
+     and every user_id-keyed table; also clears Storage RLS scope.
+  6. Emit final analytics event.
 ```
 
 ---
@@ -323,11 +345,12 @@ spillthereel/
 │   │   │   ├── useShareIntent.ts
 │   │   │   └── useSSE.ts                    # Item-state stream
 │   │   ├── lib/
-│   │   │   ├── api.ts                       # fetch wrapper with token attach
-│   │   │   ├── firebase.ts                  # Firebase init
-│   │   │   ├── secure-store.ts              # Wrapper over expo-secure-store
-│   │   │   ├── analytics.ts                 # PostHog helpers
-│   │   │   └── deep-links.ts                # Platform-specific "open source"
+│   │   │   ├── api.ts                       # fetch wrapper, JWT attach, 401→signOut
+│   │   │   ├── supabase.ts                  # Client + SecureStore session adapter
+│   │   │   ├── oauth.ts                     # PKCE OAuth, deep links, native Apple
+│   │   │   ├── password.ts                  # Strength rules + match check
+│   │   │   ├── display-name.ts              # Greeting/profile name resolution
+│   │   │   └── verification.ts              # Pending-email flag, resend, dismissal
 │   │   ├── stores/                          # Zustand slices
 │   │   │   ├── ui-store.ts
 │   │   │   └── filters-store.ts
@@ -348,7 +371,7 @@ spillthereel/
 │   │   │   ├── main.py                      # ASGI app factory
 │   │   │   ├── settings.py                  # Pydantic settings
 │   │   │   ├── auth/
-│   │   │   │   ├── firebase.py              # Verify ID token
+│   │   │   │   ├── supabase_auth.py         # Verify Supabase JWT (ES256/JWKS, HS256 fallback)
 │   │   │   │   └── middleware.py
 │   │   │   ├── api/
 │   │   │   │   ├── v1/
@@ -382,7 +405,7 @@ spillthereel/
 │   │   │   │   │   └── groq_whisper.py
 │   │   │   │   ├── media/
 │   │   │   │   │   ├── ffmpeg.py            # Frame sampling, audio extract, thumbnails
-│   │   │   │   │   └── gcs.py               # Upload helper
+│   │   │   │   │   └── supabase_storage.py  # Upload/signed-URL helper (Storage REST)
 │   │   │   │   ├── ingest/
 │   │   │   │   │   ├── pipeline.py          # ingest_item(item_id) orchestrator
 │   │   │   │   │   ├── platform_detect.py
@@ -433,9 +456,10 @@ spillthereel/
 │   │   ├── modules/
 │   │   │   ├── cloud_run_service/
 │   │   │   ├── cloud_tasks/
-│   │   │   ├── cloud_sql/
-│   │   │   ├── gcs/
+│   │   │   ├── secrets/
 │   │   │   └── gke_cobalt/
+│   │   # NOTE: no cloud_sql/ or gcs/ modules — Postgres + Storage
+│   │   # are Supabase-managed, not Terraform-managed.
 │   │   ├── environments/
 │   │   │   ├── staging/
 │   │   │   └── prod/
@@ -518,7 +542,7 @@ spillthereel/
                                                │
                                                ▼
                                     ┌───────────────────────┐
-                                    │ gcs.upload_thumbnail  │
+                                    │ storage.upload_thumbnail (Supabase) │
                                     └──────────┬────────────┘
                                                │
                                                ▼
@@ -655,7 +679,7 @@ Any step can fail; failure is captured in `items.failure_reason` and drives the 
 | Environment | Region | Purpose |
 |-------------|--------|---------|
 | dev (local) | laptop | docker-compose Postgres + local FastAPI, Cognee Cloud dev namespace, real Gemini keys behind a $10/mo cap |
-| staging | us-central1 | Full mirror of prod at ~10% capacity, separate Firebase project, separate Cognee namespace prefix |
+| staging | us-central1 | Full mirror of prod at ~10% capacity, separate Supabase project (own Auth + Postgres + Storage), separate Cognee namespace prefix |
 | prod | us-central1 primary | Live app |
 
 ### 9.2 Prod network diagram
@@ -706,7 +730,7 @@ Any step can fail; failure is captured in `items.failure_reason` and drives the 
 ### 9.3 Failover
 
 - Cloud Run is regional but auto-recovers on zone failures.
-- Cloud SQL HA replica in a secondary zone; automatic failover.
+- Supabase Postgres automated backups with 7-day PITR (Pro tier); no self-managed DB failover to operate.
 - Cobalt cluster runs across ≥ 2 zones via GKE Autopilot.
 - Disaster recovery region (`us-east1`) is a documented runbook only — no live capacity in v1 (revisit at 10k+ DAUs).
 
@@ -787,15 +811,16 @@ Client                                    Supabase Auth              Backend
 scripts/local-dev.sh
   ↓
 docker-compose up:
-  - postgres:16 (with initial schema)
+  - postgres:16 (Supabase-compatible schema for local dev)
   - api (FastAPI, hot-reload)
   - worker (FastAPI worker mode)
-  - localstack (for GCS emulation) — optional
   - cobalt (upstream image)
   ↓
 Mobile:
   npx expo start
-  Uses staging Firebase project so real device auth works.
+  Uses the staging Supabase project so real device auth works
+  (Supabase Auth + Postgres + Storage are always cloud-hosted —
+  there is nothing stateful to emulate locally).
 ```
 
 Cognee Cloud is accessed with a dev-tier API key. Gemini/Groq use rate-capped dev keys.
