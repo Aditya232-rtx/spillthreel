@@ -1,0 +1,39 @@
+name: eas-preview
+
+# Manual only — EAS free-plan build minutes are scarce, so preview builds
+# never run on push. Trigger from the Actions tab when a build is needed.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: eas-preview
+  cancel-in-progress: false
+
+jobs:
+  preview-apk:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/mobile
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: apps/mobile/package-lock.json
+
+      - uses: expo/expo-github-action@v8
+        with:
+          eas-version: latest
+          token: ${{ secrets.EXPO_TOKEN }}
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Preview build (Android APK)
+        run: eas build --platform android --profile preview --non-interactive

@@ -1,0 +1,40 @@
+name: mobile-ci
+
+on:
+  push:
+    branches: [main]
+    paths: ["apps/mobile/**", ".github/workflows/mobile-ci.yml"]
+  pull_request:
+    paths: ["apps/mobile/**", ".github/workflows/mobile-ci.yml"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: mobile-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  typecheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: apps/mobile/package-lock.json
+
+      - name: Install dependencies
+        working-directory: apps/mobile
+        run: npm ci
+
+      - name: Typecheck
+        working-directory: apps/mobile
+        run: npx tsc --noEmit
+
+      # Non-blocking: informational only, never fails the job.
+      - name: Expo doctor
+        working-directory: apps/mobile
+        run: npx expo-doctor || true

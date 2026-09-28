@@ -1,0 +1,52 @@
+name: api-ci
+
+on:
+  push:
+    branches: [main]
+    paths: ["apps/api/**", ".github/workflows/api-ci.yml"]
+  pull_request:
+    paths: ["apps/api/**", ".github/workflows/api-ci.yml"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: api-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Sync dependencies
+        working-directory: apps/api
+        run: uv sync --frozen
+
+      - name: Ruff check
+        working-directory: apps/api
+        run: uv run ruff check .
+
+      - name: Ruff format check
+        working-directory: apps/api
+        run: uv run ruff format --check .
+
+      - name: Mypy
+        working-directory: apps/api
+        run: uv run mypy app/
+
+      - name: Pytest
+        working-directory: apps/api
+        env:
+          ENVIRONMENT: dev
+          SUPABASE_URL: https://test.supabase.co
+          SUPABASE_PUBLISHABLE_KEY: sb_publishable_test
+          SUPABASE_SECRET_KEY: sb_secret_test
+          DATABASE_URL: postgresql+asyncpg://postgres:postgres@localhost:5432/postgres
+        run: uv run pytest -q

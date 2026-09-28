@@ -1,0 +1,65 @@
+name: terraform-plan
+
+on:
+  push:
+    branches: [main]
+    paths: ["infra/**", ".github/workflows/terraform-plan.yml"]
+  pull_request:
+    paths: ["infra/**", ".github/workflows/terraform-plan.yml"]
+
+permissions:
+  contents: read
+  id-token: write # Workload Identity Federation only, no long-lived keys
+  pull-requests: write # posts the plan as a PR comment
+
+concurrency:
+  group: terraform-plan-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  fmt-and-validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.9.x
+
+      - name: Format check
+        run: terraform fmt -check -recursive infra/
+
+      - name: Init (no backend) + validate staging
+        working-directory: infra/envs/staging
+        run: |
+          terraform init -backend=false
+          terraform validate
+
+  plan:
+    # Real plans only when GCP is actually provisioned. Flip the GCP_ENABLED
+    # repository variable to true after `terraform apply` has been run once
+    # by hand (see infra/envs/staging/README or root README).
+    if: vars.GCP_ENABLED == 'true'
+    needs: fmt-and-validate
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.9.x
+          terraform_wrapper: false
+
+      - name: Authenticate to GCP (WIF, no keys)
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
+          service_account: ${{ vars.GCP_TF_SERVICE_ACCOUNT }}
+
+      - name: Terraform plan
+        working-directory: infra/envs/staging
+        run: terraform init -input=false && terraform plan -input=false -no-color -out=tfplan
