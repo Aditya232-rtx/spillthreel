@@ -1,4 +1,6 @@
 import { useEffect } from 'react';
+import * as Sentry from '@sentry/react-native';
+import { PostHogProvider, usePostHog } from 'posthog-react-native';
 import { useFonts } from 'expo-font';
 import { Stack, useRouter, useSegments } from 'expo-router';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
@@ -6,8 +8,13 @@ import { SafeAreaProvider } from 'react-native-safe-area-context';
 import * as SplashScreen from 'expo-splash-screen';
 import { StatusBar } from 'expo-status-bar';
 import { useAuth } from '@/hooks/useAuth';
+import { setAnalyticsClient } from '@/lib/analytics';
 import { consumeOAuthNext, routeForOAuthNext } from '@/lib/oauth';
+import { initSentry } from '@/lib/sentry';
 import { clearPendingEmail, getPendingEmail } from '@/lib/verification';
+
+// Error monitoring first: no-op without EXPO_PUBLIC_SENTRY_DSN.
+initSentry();
 
 SplashScreen.preventAutoHideAsync().catch(() => {
   // no-op: acceptable if called before native module is ready
@@ -72,7 +79,7 @@ function AuthGate() {
   return null;
 }
 
-export default function RootLayout() {
+function RootLayout() {
   const [fontsLoaded, fontError] = useFonts({
     Oswald_700Bold: require('../assets/fonts/Oswald-Bold.ttf'),
     Oswald_600SemiBold: require('../assets/fonts/Oswald-SemiBold.ttf'),
@@ -103,3 +110,36 @@ export default function RootLayout() {
     </GestureHandlerRootView>
   );
 }
+
+/** Hands the live PostHog client to lib/analytics (no-op when disabled). */
+function AnalyticsBootstrap() {
+  const posthog = usePostHog();
+  useEffect(() => {
+    setAnalyticsClient(posthog);
+    return () => setAnalyticsClient(null);
+  }, [posthog]);
+  return null;
+}
+
+const POSTHOG_KEY = process.env.EXPO_PUBLIC_POSTHOG_KEY;
+const POSTHOG_HOST = process.env.EXPO_PUBLIC_POSTHOG_HOST || 'https://us.i.posthog.com';
+
+function RootLayoutWithProviders() {
+  // Privacy: nothing automatic — no session replay, no touch/screen
+  // autocapture. All events are explicit track() calls (see lib/analytics).
+  if (!POSTHOG_KEY) {
+    return <RootLayout />;
+  }
+  return (
+    <PostHogProvider
+      apiKey={POSTHOG_KEY}
+      autocapture={false}
+      options={{ host: POSTHOG_HOST, enableSessionReplay: false }}
+    >
+      <AnalyticsBootstrap />
+      <RootLayout />
+    </PostHogProvider>
+  );
+}
+
+export default Sentry.wrap(RootLayoutWithProviders);

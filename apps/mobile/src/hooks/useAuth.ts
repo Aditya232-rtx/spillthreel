@@ -11,7 +11,9 @@ import { useEffect, useState } from 'react';
 import { Platform } from 'react-native';
 import type { AuthError, Session, User } from '@supabase/supabase-js';
 import { supabase } from '@/lib/supabase';
-import { getRememberedDisplayName } from '@/lib/display-name';
+import { identifyUser, resetAnalytics } from '@/lib/analytics';
+import { getRememberedAvatarChoice } from '@/lib/avatar';
+import { getCustomName, getRememberedDisplayName } from '@/lib/display-name';
 import {
   buildOAuthRedirectUrl,
   performOAuthSignIn,
@@ -54,16 +56,37 @@ export function useAuth(): UseAuthResult {
     const { data: sub } = supabase.auth.onAuthStateChange(async (event, next) => {
       setSession(next);
       setLoading(false);
+      // Analytics identity: Supabase user id only, never email/metadata.
+      // Reset on sign-out so the next user starts clean.
+      if (event === 'SIGNED_OUT' || !next) {
+        resetAnalytics();
+      } else if (event === 'SIGNED_IN' && next.user) {
+        identifyUser(next.user.id);
+      }
       // OAuth providers overwrite user_metadata with the provider profile
-      // on every sign-in. If the user explicitly chose a different name
-      // before, re-apply it so the provider never silently renames them.
-      // (USER_UPDATED from our own write below doesn't re-trigger this.)
+      // on every sign-in. If the user explicitly chose a different name or
+      // avatar before, re-apply it so the provider never silently resets
+      // them. (USER_UPDATED from our own write below doesn't re-trigger
+      // this.) Server-side custom_name wins over the device override so a
+      // reinstall can't resurrect a stale local choice.
       if (event === 'SIGNED_IN' && next?.user?.email) {
         const email = next.user.email;
-        const wanted = await getRememberedDisplayName(email);
-        const current = next.user.user_metadata?.full_name;
-        if (wanted && wanted !== current) {
-          await supabase.auth.updateUser({ data: { full_name: wanted } });
+        const meta = next.user.user_metadata ?? {};
+        const [rememberedName, rememberedAvatar] = await Promise.all([
+          getRememberedDisplayName(email),
+          getRememberedAvatarChoice(email),
+        ]);
+        const wantedName = getCustomName(next.user) ?? rememberedName;
+        const patch: Record<string, string> = {};
+        if (wantedName && wantedName !== meta.full_name) {
+          patch.full_name = wantedName;
+          patch.custom_name = wantedName;
+        }
+        if (rememberedAvatar && rememberedAvatar !== meta.avatar) {
+          patch.avatar = rememberedAvatar;
+        }
+        if (Object.keys(patch).length > 0) {
+          await supabase.auth.updateUser({ data: patch });
         }
       }
     });
@@ -90,11 +113,16 @@ export function useAuth(): UseAuthResult {
         Platform.OS === 'web' && typeof window !== 'undefined'
           ? `${window.location.origin}`
           : buildOAuthRedirectUrl();
+      // custom_name mirrors the choice server-side: providers overwrite
+      // full_name but never this key, so the choice survives reinstalls.
+      const nameData = displayName
+        ? { full_name: displayName, custom_name: displayName }
+        : undefined;
       const { data, error } = await supabase.auth.signUp({
         email,
         password,
         options: {
-          ...(displayName ? { data: { full_name: displayName } } : undefined),
+          ...(nameData ? { data: nameData } : undefined),
           emailRedirectTo,
         },
       });

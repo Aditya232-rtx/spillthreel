@@ -17,12 +17,11 @@
  */
 import { supabase } from '@/lib/supabase';
 
-// In dev, this points at localhost:8000 (docker-compose api). In prod
-// it's the Cloud Run URL. Swap via env-time constant later — for now
-// __DEV__ is enough.
-const API_BASE_URL = __DEV__
-  ? 'http://localhost:8000'
-  : 'https://api.spillthereel.app';
+// EXPO_PUBLIC_API_URL wins when set (preview/production EAS builds).
+// Otherwise localhost in dev, and the Cloud Run URL in release builds.
+const API_BASE_URL =
+  process.env.EXPO_PUBLIC_API_URL ||
+  (__DEV__ ? 'http://localhost:8000' : 'https://api.spillthereel.app');
 
 export class ApiError extends Error {
   constructor(
