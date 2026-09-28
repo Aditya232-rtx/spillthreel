@@ -1,6 +1,13 @@
 # Local dev stack — used by scripts/local-dev.sh.
-# Provides Postgres + the API service; the worker uses the same image.
-# Cobalt runs as an unmodified upstream image.
+#
+# Values come from the shell environment. local-dev.sh exports them from
+# apps/api/.env (default, prod values) or --env apps/api/.env.staging
+# before invoking compose, so `docker compose config` needs that file
+# sourced (or exported vars) to resolve.
+#
+# Data plane is LOCAL Postgres (container below). Identity plane is
+# Supabase Cloud Auth (JWTs verify offline via JWKS) — there is no
+# Firebase, no Cloud SQL, no local Auth emulator in this architecture.
 
 services:
   postgres:
@@ -24,15 +31,32 @@ services:
       context: ./apps/api
     environment:
       ENVIRONMENT: dev
-      LOG_LEVEL: DEBUG
+      LOG_LEVEL: ${LOG_LEVEL:-DEBUG}
+      # Local container Postgres — overrides any cloud DATABASE_URL from
+      # the env file. Direct/migration URLs pass through untouched.
       DATABASE_URL: postgresql+asyncpg://spill:spill@postgres:5432/spillthereel
-      FIREBASE_PROJECT_ID: ${FIREBASE_PROJECT_ID:-spillthereel-dev}
-      FIREBASE_CREDENTIALS_JSON: ${FIREBASE_CREDENTIALS_JSON:-}
+      DATABASE_URL_DIRECT: ${DATABASE_URL_DIRECT:-}
+      # --- Supabase (Auth verify via JWKS, Storage client) ---
+      SUPABASE_URL: ${SUPABASE_URL:-}
+      SUPABASE_PUBLISHABLE_KEY: ${SUPABASE_PUBLISHABLE_KEY:-}
+      SUPABASE_SECRET_KEY: ${SUPABASE_SECRET_KEY:-}
+      SUPABASE_LEGACY_JWT_SECRET: ${SUPABASE_LEGACY_JWT_SECRET:-}
+      SUPABASE_BUCKET_MEDIA: ${SUPABASE_BUCKET_MEDIA:-media}
+      SUPABASE_BUCKET_EXPORTS: ${SUPABASE_BUCKET_EXPORTS:-exports}
+      # --- Extractors / LLM / memory (empty = code paths that need them fail loudly) ---
+      COBALT_BASE_URL: http://cobalt:9000
+      COBALT_API_KEY: ${COBALT_API_KEY:-}
       GEMINI_API_KEY: ${GEMINI_API_KEY:-}
       GROQ_API_KEY: ${GROQ_API_KEY:-}
       COGNEE_API_KEY: ${COGNEE_API_KEY:-}
-      COBALT_BASE_URL: http://cobalt:9000
+      COGNEE_BASE_URL: ${COGNEE_BASE_URL:-https://api.cognee.ai}
+      # --- Observability / guards ---
       SENTRY_DSN: ${SENTRY_DSN:-}
+      SENTRY_RELEASE: ${SENTRY_RELEASE:-}
+      GIT_SHA: ${GIT_SHA:-}
+      RATE_LIMIT_DEFAULT: ${RATE_LIMIT_DEFAULT:-60/minute}
+      RATE_LIMIT_SAVES: ${RATE_LIMIT_SAVES:-10/minute}
+      CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-}
     depends_on:
       postgres:
         condition: service_healthy
