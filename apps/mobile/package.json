@@ -4,7 +4,7 @@
   "main": "index.ts",
   "dependencies": {
     "@expo/metro-runtime": "~57.0.15",
-    "@react-native-async-storage/async-storage": "2.2.0",
+    "@react-native-async-storage/async-storage": "3.1.1",
     "@sentry/react-native": "~7.11.0",
     "@supabase/supabase-js": "^2.116.0",
     "expo": "~57.0.23",
