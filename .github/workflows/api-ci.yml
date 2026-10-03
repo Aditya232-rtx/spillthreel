@@ -17,6 +17,22 @@ concurrency:
 jobs:
   lint-and-test:
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        # Same extension set as local dev (pgvector image) so the
+        # pgvector round-trip test runs for real, not skipped.
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: spill
+          POSTGRES_PASSWORD: spill
+          POSTGRES_DB: spillthereel
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U spill -d spillthereel"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
     steps:
       - uses: actions/checkout@v4
 
@@ -25,9 +41,11 @@ jobs:
         with:
           enable-cache: true
 
-      - name: Sync dependencies
+      - name: Sync dependencies (incl. dev extra)
         working-directory: apps/api
-        run: uv sync --frozen
+        # NOTE: dev tools (pytest/ruff/mypy) live in the `dev`
+        # optional-dependencies extra — plain `uv sync` skips extras.
+        run: uv sync --frozen --extra dev
 
       - name: Ruff check
         working-directory: apps/api
@@ -49,4 +67,5 @@ jobs:
           SUPABASE_PUBLISHABLE_KEY: sb_publishable_test
           SUPABASE_SECRET_KEY: sb_secret_test
           DATABASE_URL: postgresql+asyncpg://postgres:postgres@localhost:5432/postgres
+          TEST_DATABASE_URL: postgresql://spill:spill@localhost:5432/spillthereel
         run: uv run pytest -q
