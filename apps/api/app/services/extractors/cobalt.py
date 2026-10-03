@@ -39,6 +39,31 @@ _STREAM_TIMEOUT_SECONDS = 120.0
 _COBALT_API_PATH = "/"
 
 
+def _get_cobalt_api_key() -> str | None:
+    """Read Cobalt API key from file (staging/prod) or settings (dev)."""
+    settings = get_settings()
+    if settings.environment == "dev":
+        return settings.cobalt_api_key
+    # In staging/prod, read from file mounted at API_KEY_URL
+    api_key_path = "/var/run/secrets/cobalt_api_key"
+    try:
+        return Path(api_key_path).read_text().strip()
+    except FileNotFoundError:
+        return None
+
+
+async def _get_gcp_id_token(audience: str) -> str | None:
+    """Fetch a Google-signed ID token for the given audience (Cloud Run IAM)."""
+    try:
+        from google.auth.transport.requests import Request
+        from google.oauth2 import id_token as google_id_token
+
+        fetched = google_id_token.fetch_id_token(Request(), audience)  # type: ignore[no-untyped-call]
+        return str(fetched) if fetched else None
+    except Exception:
+        return None
+
+
 class CobaltExtractor:
     """Extractor Protocol impl."""
 
@@ -56,8 +81,19 @@ class CobaltExtractor:
             raise ExtractorError("cobalt_base_url not configured")
 
         headers = {"Accept": "application/json", "Content-Type": "application/json"}
-        if settings.cobalt_api_key:
-            headers["Authorization"] = f"Api-Key {settings.cobalt_api_key}"
+
+        # Add Cobalt API key for Cobalt's own auth layer
+        api_key = _get_cobalt_api_key()
+        if api_key:
+            headers["Authorization"] = f"Api-Key {api_key}"
+
+        # Add Google ID token for Cloud Run IAM auth (non-dev environments)
+        if settings.environment != "dev":
+            id_token = await _get_gcp_id_token(settings.cobalt_base_url.rstrip("/"))
+            if id_token:
+                headers["Authorization"] = f"Bearer {id_token}"
+            else:
+                _logger.warning("cobalt.gcp_id_token_missing", url=url)
 
         # Cobalt's request body — `downloadMode: auto` lets it decide
         # video vs audio-only vs muxed based on the source's best stream.

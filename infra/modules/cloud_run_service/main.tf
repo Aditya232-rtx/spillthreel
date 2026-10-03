@@ -57,3 +57,12 @@ resource "google_cloud_run_v2_service_iam_member" "public_access" {
   role     = "roles/run.invoker"
   member   = "allUsers"
 }
+
+resource "google_cloud_run_v2_service_iam_member" "invoker_access" {
+  for_each = var.allow_unauthenticated ? toset([]) : toset(var.invoker_members)
+  project  = var.project_id
+  location = var.region
+  name     = google_cloud_run_v2_service.service.name
+  role     = "roles/run.invoker"
+  member   = each.value
+}

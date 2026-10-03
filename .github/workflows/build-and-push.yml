@@ -1,0 +1,72 @@
+name: build-and-push
+
+# Manual only (workflow_dispatch) — and on push to main when GCP is enabled
+# (EAS free-plan quota is scarce, so we don't build on every push).
+on:
+  push:
+    branches: [main]
+    paths:
+      - "apps/api/**"
+      - "apps/workers/**"
+      - "apps/api/pyproject.toml"
+      - "apps/api/uv.lock"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write  # for WIF auth
+
+concurrency:
+  group: build-and-push-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  REGION: asia-south1
+  PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
+  REPOSITORY: spillthereel
+  IMAGE_API: asia-south1-docker.pkg.dev/${{ vars.GCP_PROJECT_ID }}/spillthereel/api
+  IMAGE_WORKER: asia-south1-docker.pkg.dev/${{ vars.GCP_PROJECT_ID }}/spillthereel/worker
+
+jobs:
+  build-and-push:
+    if: vars.GCP_ENABLED == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Authenticate to GCP (WIF)
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
+          service_account: ${{ vars.GCP_TF_SERVICE_ACCOUNT }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Configure Docker for Artifact Registry
+        run: gcloud auth configure-docker ${{ env.REGION }}-docker.pkg.dev --quiet
+
+      - name: Build & push API image
+        working-directory: apps/api
+        run: |
+          TAG="${{ env.IMAGE_API }}:${{ github.sha }}"
+          docker buildx build \
+            --platform linux/amd64 \
+            -t "${TAG}" \
+            -t "${{ env.IMAGE_API }}:latest" \
+            --push .
+
+      - name: Build & push Worker image
+        # Context MUST be the repo root: apps/workers/Dockerfile copies
+        # apps/api/*, which only resolves from `.`.
+        run: |
+          TAG="${{ env.IMAGE_WORKER }}:${{ github.sha }}"
+          docker buildx build \
+            --platform linux/amd64 \
+            -f apps/workers/Dockerfile \
+            -t "${TAG}" \
+            -t "${{ env.IMAGE_WORKER }}:latest" \
+            --push .

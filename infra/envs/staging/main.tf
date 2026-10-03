@@ -150,7 +150,10 @@ module "worker" {
   max_instances         = 2
   concurrency           = 4
   service_account_email = google_service_account.worker.email
-  env_vars              = local.base_env
+  env_vars = merge(local.base_env, {
+    # Selects the worker ASGI app in the shared Dockerfile CMD pattern.
+    APP_MODULE = "app.worker:app"
+  })
   secret_env_vars       = local.secret_env
   allow_unauthenticated = false
 }
@@ -164,11 +167,16 @@ module "worker" {
 # cluster. Then: provision GKE Autopilot via a gke_cobalt module, point
 # COBALT_BASE_URL at its internal LB, keep everything else identical.
 module "cobalt" {
-  source                = "../../modules/cloud_run_service"
-  project_id            = var.project_id
-  region                = var.region
-  service_name          = "spillthereel-cobalt-staging"
-  image                 = "ghcr.io/imputnet/cobalt:10"
+  source       = "../../modules/cloud_run_service"
+  project_id   = var.project_id
+  region       = var.region
+  service_name = "spillthereel-cobalt-staging"
+  # Mirrored copy — Cloud Run cannot pull ghcr.io directly. Human step
+  # after creating the AR repo (one-time per upstream tag):
+  #   crane copy ghcr.io/imputnet/cobalt:10 \
+  #     ${var.region}-docker.pkg.dev/${var.project_id}/spillthereel/cobalt:10
+  # (crane: `go install github.com/google/go-containerregistry/cmd/crane`.)
+  image                 = "${module.images.repository}/cobalt:10"
   cpu                   = "1"
   memory                = "512Mi"
   min_instances         = 0
@@ -177,10 +185,16 @@ module "cobalt" {
   container_port        = 9000
   service_account_email = google_service_account.worker.email
   env_vars = {
-    API_URL  = "http://localhost:9000/"
-    API_PORT = "9000"
+    API_URL           = "http://localhost:9000/"
+    API_PORT          = "9000"
+    API_AUTH_REQUIRED = "1"
+    API_KEY_URL       = "/var/run/secrets/cobalt_api_key"
   }
-  allow_unauthenticated = true
+  secret_env_vars = {
+    COBALT_API_KEY = "COBALT_API_KEY"
+  }
+  allow_unauthenticated = false
+  invoker_members       = ["serviceAccount:${google_service_account.worker.email}"]
 }
 
 module "github_wif" {

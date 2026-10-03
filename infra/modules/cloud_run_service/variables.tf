@@ -76,3 +76,9 @@ variable "allow_unauthenticated" {
   default     = true
   description = "False for the internal-only worker service."
 }
+
+variable "invoker_members" {
+  type        = list(string)
+  default     = []
+  description = "List of members (e.g., service accounts) to grant roles/run.invoker when allow_unauthenticated = false."
+}
