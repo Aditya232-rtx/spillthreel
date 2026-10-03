@@ -16,8 +16,10 @@ COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
 # Copy dependency files first for better cache
 COPY apps/api/pyproject.toml apps/api/uv.lock ./
 
-# Install worker dependencies (includes API deps + worker extras)
-RUN uv sync --frozen --extra worker
+# Install worker dependencies (includes API deps + worker extras).
+# --no-install-project: app sources are copied separately below, and uv
+# would otherwise fail resolving the project without them present.
+RUN uv sync --frozen --no-install-project --extra worker
 
 # ---- Runtime ----
 FROM ${BUILD_IMAGE}

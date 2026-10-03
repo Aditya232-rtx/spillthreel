@@ -82,3 +82,13 @@ variable "invoker_members" {
   default     = []
   description = "List of members (e.g., service accounts) to grant roles/run.invoker when allow_unauthenticated = false."
 }
+
+variable "secret_volumes" {
+  type = map(object({
+    secret     = string
+    mount_path = string
+    file_name  = string
+  }))
+  default     = {}
+  description = "Secret Manager secrets mounted as files (e.g. Cobalt's keys.json). Key = volume name."
+}

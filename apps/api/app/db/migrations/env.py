@@ -18,14 +18,17 @@ if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
 _settings = get_settings()
-config.set_main_option("sqlalchemy.url", _settings.database_url)
+# Migrations must bypass the pooler: DDL over pgbouncer's transaction mode
+# can hang or partially apply, so prefer the direct URL when configured.
+_migration_url = _settings.database_url_direct or _settings.database_url
+config.set_main_option("sqlalchemy.url", _migration_url)
 
 target_metadata = Base.metadata
 
 
 def run_migrations_offline() -> None:
     context.configure(
-        url=_settings.database_url,
+        url=_migration_url,
         target_metadata=target_metadata,
         literal_binds=True,
         dialect_opts={"paramstyle": "named"},

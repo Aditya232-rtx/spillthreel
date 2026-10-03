@@ -12,7 +12,9 @@ to the next extractor (yt-dlp).
 
 from __future__ import annotations
 
+import asyncio
 import tempfile
+import time
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -24,7 +26,7 @@ from app.services.extractors.base import (
     ExtractResult,
     Platform,
 )
-from app.settings import get_settings
+from app.settings import Settings, get_settings
 
 _logger = get_logger(__name__)
 
@@ -39,29 +41,58 @@ _STREAM_TIMEOUT_SECONDS = 120.0
 _COBALT_API_PATH = "/"
 
 
-def _get_cobalt_api_key() -> str | None:
-    """Read Cobalt API key from file (staging/prod) or settings (dev)."""
-    settings = get_settings()
-    if settings.environment == "dev":
-        return settings.cobalt_api_key
-    # In staging/prod, read from file mounted at API_KEY_URL
-    api_key_path = "/var/run/secrets/cobalt_api_key"
+# Google-minted ID tokens live ~1h; cache per audience for ~50 min so
+# every extraction doesn't pay a metadata-server round trip.
+_id_token_cache: dict[str, tuple[str, float]] = {}
+_ID_TOKEN_TTL_SECONDS = 3000.0
+
+
+def _fetch_id_token_sync(audience: str) -> str:
+    """Blocking Google ID-token fetch — always called via to_thread."""
+    from google.auth.transport.requests import Request
+    from google.oauth2 import id_token as google_id_token
+
+    # google-auth ships no stubs; the ignore is scoped to this one call.
+    return str(google_id_token.fetch_id_token(Request(), audience))  # type: ignore[no-untyped-call]
+
+
+async def _get_gcp_id_token(audience: str) -> str:
+    """Google-signed ID token for Cloud Run IAM. Raises on failure.
+
+    A missing token outside dev means an unconditional 403, so fail
+    loudly here instead of sending an unauthenticated request.
+    """
+    now = time.monotonic()
+    cached = _id_token_cache.get(audience)
+    if cached is not None and cached[1] > now:
+        return cached[0]
     try:
-        return Path(api_key_path).read_text().strip()
-    except FileNotFoundError:
-        return None
+        token = await asyncio.to_thread(_fetch_id_token_sync, audience)
+    except Exception as e:
+        raise ExtractorError(f"could not fetch GCP ID token for Cobalt: {e}") from e
+    if not token:
+        raise ExtractorError("empty GCP ID token for Cobalt")
+    _id_token_cache[audience] = (token, now + _ID_TOKEN_TTL_SECONDS)
+    return token
 
 
-async def _get_gcp_id_token(audience: str) -> str | None:
-    """Fetch a Google-signed ID token for the given audience (Cloud Run IAM)."""
-    try:
-        from google.auth.transport.requests import Request
-        from google.oauth2 import id_token as google_id_token
+async def _auth_headers(settings: Settings) -> dict[str, str]:
+    """Auth headers for one Cobalt call. Two independent layers:
 
-        fetched = google_id_token.fetch_id_token(Request(), audience)  # type: ignore[no-untyped-call]
-        return str(fetched) if fetched else None
-    except Exception:
-        return None
+    - `Authorization: Api-Key` — Cobalt's own key check (all environments).
+    - `X-Serverless-Authorization: Bearer` — Cloud Run IAM, which strips
+      this header before the request reaches the container, so it never
+      collides with Cobalt's key. Non-dev only.
+    """
+    if not settings.cobalt_base_url:
+        raise ExtractorError("cobalt_base_url not configured")
+    headers = {"Accept": "application/json", "Content-Type": "application/json"}
+    if settings.cobalt_api_key:
+        headers["Authorization"] = f"Api-Key {settings.cobalt_api_key}"
+    if settings.environment != "dev":
+        id_token = await _get_gcp_id_token(settings.cobalt_base_url.rstrip("/"))
+        headers["X-Serverless-Authorization"] = f"Bearer {id_token}"
+    return headers
 
 
 class CobaltExtractor:
@@ -80,20 +111,7 @@ class CobaltExtractor:
         if not settings.cobalt_base_url:
             raise ExtractorError("cobalt_base_url not configured")
 
-        headers = {"Accept": "application/json", "Content-Type": "application/json"}
-
-        # Add Cobalt API key for Cobalt's own auth layer
-        api_key = _get_cobalt_api_key()
-        if api_key:
-            headers["Authorization"] = f"Api-Key {api_key}"
-
-        # Add Google ID token for Cloud Run IAM auth (non-dev environments)
-        if settings.environment != "dev":
-            id_token = await _get_gcp_id_token(settings.cobalt_base_url.rstrip("/"))
-            if id_token:
-                headers["Authorization"] = f"Bearer {id_token}"
-            else:
-                _logger.warning("cobalt.gcp_id_token_missing", url=url)
+        headers = await _auth_headers(settings)
 
         # Cobalt's request body — `downloadMode: auto` lets it decide
         # video vs audio-only vs muxed based on the source's best stream.

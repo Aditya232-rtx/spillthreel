@@ -28,6 +28,7 @@ locals {
     "GEMINI_API_KEY",
     "GROQ_API_KEY",
     "COBALT_API_KEY",
+    "COBALT_KEYS_JSON",
     "SENTRY_DSN",
   ]
 
@@ -153,6 +154,10 @@ module "worker" {
   env_vars = merge(local.base_env, {
     # Selects the worker ASGI app in the shared Dockerfile CMD pattern.
     APP_MODULE = "app.worker:app"
+    # Where the worker reaches Cobalt (private URL; worker SA is the
+    # only invoker). Set here, not in base_env, to avoid a reference
+    # cycle (cobalt must not reference the worker).
+    COBALT_BASE_URL = module.cobalt.url
   })
   secret_env_vars       = local.secret_env
   allow_unauthenticated = false
@@ -188,10 +193,16 @@ module "cobalt" {
     API_URL           = "http://localhost:9000/"
     API_PORT          = "9000"
     API_AUTH_REQUIRED = "1"
-    API_KEY_URL       = "/var/run/secrets/cobalt_api_key"
+    # file:// protocol required by upstream; served from the mounted
+    # COBALT_KEYS_JSON secret below (JSON map of UUID -> key options).
+    API_KEY_URL = "file:///secrets/cobalt/keys.json"
   }
-  secret_env_vars = {
-    COBALT_API_KEY = "COBALT_API_KEY"
+  secret_volumes = {
+    cobalt-keys = {
+      secret     = "COBALT_KEYS_JSON"
+      mount_path = "/secrets/cobalt"
+      file_name  = "keys.json"
+    }
   }
   allow_unauthenticated = false
   invoker_members       = ["serviceAccount:${google_service_account.worker.email}"]

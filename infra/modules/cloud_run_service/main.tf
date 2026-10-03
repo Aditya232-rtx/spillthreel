@@ -11,6 +11,21 @@ resource "google_cloud_run_v2_service" "service" {
       max_instance_count = var.max_instances
     }
 
+    dynamic "volumes" {
+      for_each = var.secret_volumes
+      content {
+        name = volumes.key
+        secret {
+          secret = volumes.value.secret
+          items {
+            version = "latest"
+            path    = volumes.value.file_name
+            mode    = 292 # 0444 read-only
+          }
+        }
+      }
+    }
+
     containers {
       image = var.image
 
@@ -43,6 +58,14 @@ resource "google_cloud_run_v2_service" "service" {
               version = "latest"
             }
           }
+        }
+      }
+
+      dynamic "volume_mounts" {
+        for_each = var.secret_volumes
+        content {
+          name       = volume_mounts.key
+          mount_path = volume_mounts.value.mount_path
         }
       }
     }
