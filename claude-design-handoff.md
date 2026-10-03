@@ -136,7 +136,7 @@ Chat tab's active fill is peri instead of ink.
 ❌ No screen with more than one heavy illustration.
 ❌ No stock illustrations (unDraw, Storyset, etc.) — everything drawn in-brand.
 ❌ Do NOT include "process on this device" or any "on-device model" setting
-   — that was a mistake in a rough mockup. The app uses cloud (Gemini + Cognee).
+   — that was a mistake in a rough mockup. The app uses cloud (Gemini).
 
 ━━━ DELIVERABLE FORMAT ━━━
 For each screen I request:

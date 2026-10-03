@@ -130,7 +130,7 @@ Companion docs (contract-level, don't drift): [prd.md](./prd.md) · [trd.md](./t
 - **`services/media/supabase_storage.py`** — upload/signed_url/delete via Storage REST API with apikey + service-role auth.
 - **`services/llm/gemini.py`** — SummaryModel with structured output (JSON schema), Flash-Lite default, temp 0.3, multimodal (frames + audio) or transcript-only.
 - **`services/llm/groq_whisper.py`** — TranscriptionModel for the long-audio branch.
-- **`services/memory/cognee_cloud.py`** — full MemoryStore (write, write_batch, delete, search, similar, delete_namespace) via httpx REST.
+- **`services/memory/pgvector_store.py`** — full MemoryStore (write, write_batch, delete, search, similar, delete_namespace) on pgvector + Gemini embeddings, user-scoped queries throughout.
 - **`services/ingest/pipeline.py`** — 11-step orchestrator matching architecture.md §4.1: state transitions with audit rows, short-txn DB helpers so ffmpeg/Gemini don't hold row locks, cleanup of tmpfs in finally.
 - **`app/tasks/worker_entry.py`** — /work/ingest live route; import/delete_user/category_backfill stub routes for Phase 2/3/4.
 - **`app/worker.py`** — dedicated worker ASGI entrypoint for the prod Cloud Run worker service.
@@ -140,7 +140,7 @@ Companion docs (contract-level, don't drift): [prd.md](./prd.md) · [trd.md](./t
 ### 🔴 Missing (Phase 1 remainder)
 
 - **`services/extractors/gallerydl.py`** — image extractor for IG carousels + X threads.
-- **`services/memory/cognee_oss.py`** — escape-hatch stub (only needed if Cognee Cloud outage forces a swap).
+- (Cognee OSS escape hatch dropped — nothing external left to escape from.)
 - **`services/ingest/taxonomy.py`** — canonical taxonomy + `decide_tier()` + `is_category_clear()` (blocking for Phase 2 IG import).
 - **`services/search/retriever.py`** + **`services/search/answerer.py`** — search RAG loop.
 - **`/v1/search`** endpoint.
@@ -155,7 +155,7 @@ Companion docs (contract-level, don't drift): [prd.md](./prd.md) · [trd.md](./t
 - **Cloud Tasks HTTP push** — real GCP integration behind the current local-dispatcher shim.
 - **User deletion cascade worker** — task_type=`delete_user` (currently stub).
 - **Category backfill classifier worker** — task_type=`category_backfill` (currently stub).
-- **Integration test** for the full pipeline against live Gemini + Cognee (rate-limited).
+- **Integration test** for the full pipeline against live Postgres (pgvector) + Gemini (rate-limited).
 
 ### ⏳ Pending
 
@@ -215,7 +215,7 @@ Companion docs (contract-level, don't drift): [prd.md](./prd.md) · [trd.md](./t
 - **EAS Build + Submit configs** — profile production + preview, iOS/Android bundle IDs verified.
 - **Apple Developer + Google Play Console** accounts (admin-side setup outside the repo).
 - **Domain** (`spillthereel.app` or similar) not yet purchased.
-- **Cognee Cloud account** — need to sign up, capture API key.
+- (Memory-vendor account removed — pgvector needs no signup.)
 - **Gemini API key** — need to request from ai.google.dev.
 - **Groq API key** — optional for v1 (only long-form audio), can defer.
 - **Sentry projects** (mobile + backend).
@@ -253,7 +253,7 @@ Companion docs (contract-level, don't drift): [prd.md](./prd.md) · [trd.md](./t
 - **Welcome logo animation** — see Mobile §2. Web-only rendering issue.
 - **JWT SECRET in .env** — user set `SUPABASE_LEGACY_JWT_SECRET` even though the project is on ES256. Harmless (verifier will simply never hit the HS256 branch on new tokens) but the .env comment says "leave blank" — either update the comment or drop the value once we confirm no legacy tokens circulate.
 - **Cost model** in TRD §19 uses Supabase Pro pricing ($25/mo flat + usage). Once we're actually on Pro, verify against real invoices.
-- **Region choice** (ap-south-1) is optimized for Indian users but adds ~200ms to every Gemini/Cognee call (both US-hosted). Worth measuring end-to-end save-to-ready latency and re-evaluating if it exceeds PRD's 60s median target.
+- **Region choice** (ap-south-1) is optimized for Indian users but adds ~200ms to every Gemini call (US-hosted). Worth measuring end-to-end save-to-ready latency and re-evaluating if it exceeds PRD's 60s median target.
 - **No RLS tests in CI yet** — TRD §18 promises a dedicated pytest suite. Every schema change should re-run this before merging.
 - **`alembic_version` table has no RLS** — intentional (Alembic bypasses it via service_role) but worth documenting explicitly to avoid a future audit flag.
 - **Confirmation links are web-origin on web** — `emailRedirectTo` is `window.location.origin` for web signups, so tapping the link on a phone browser pointed at localhost goes nowhere; confirm on the Metro host or sign up from the native app (deep-link return). Revisit with a hosted domain before launch.
@@ -268,8 +268,8 @@ In priority order. Session should pick up here:
 
 1. **Build search RAG loop** — `services/search/retriever.py`, `services/search/answerer.py`, `/v1/search` endpoint (chat UI is ready with stub replies + history).
 2. **Build IG import pipeline** (Phase 2) — parser exists (`ig_parser.py` + `taxonomy.py` + corpus tests); still missing `ig_pipeline.py`, `/v1/import/instagram` upload + `/v1/import/{id}` progress endpoints, throttled enhance queue.
-3. **Remaining Phase 1 endpoints** — `/v1/events` SSE, `/enhance`, `/retry`, `/notifications/token`, `gallerydl.py`, `cognee_oss.py` stub.
-4. **Manual smoke test** — POST to `/v1/saves` with a real IG reel URL; watch ingestion end-to-end (Cobalt → ffmpeg → Gemini → Cognee → thumbnail → `fully_indexed`).
+3. **Remaining Phase 1 endpoints** — `/v1/events` SSE, `/enhance`, `/retry`, `/notifications/token`, `gallerydl.py`.
+4. **Manual smoke test** — POST to `/v1/saves` with a real IG reel URL; watch ingestion end-to-end (Cobalt → ffmpeg → Gemini → pgvector → thumbnail → `fully_indexed`).
 5. **Share-sheet native wiring** (PRD F1) + TestFlight external build to validate the pattern early.
 6. **Apple provider** — Services ID + p8 key → Supabase dashboard; then native-Apple test on a real iOS device.
 7. **Observability** — OTel spans, Cloud Monitoring metrics, alert policies (TRD §17).

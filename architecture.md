@@ -28,7 +28,7 @@ Whereas the TRD documents *what* we use, this document documents *how it fits to
 | API + workers compute | **GCP Cloud Run** | Same FastAPI codebase, two entrypoints |
 | Job queues | **GCP Cloud Tasks** | `ingest`, `import`, `enhance` queues |
 | Media extraction | **GKE Autopilot (Cobalt)** | Upstream image, internal LB, called by workers only |
-| Memory / RAG | **Cognee Cloud** | Per-user namespaces |
+| Memory / RAG | **pgvector in Supabase Postgres + Gemini embeddings** | One `item_embeddings` row per item, HNSW cosine index |
 | Multimodal LLM / ASR | **Gemini / Groq** | |
 
 There is deliberately **no** Cloud SQL, Cloud Storage, Firebase, Firestore, or
@@ -70,18 +70,18 @@ localstack in this architecture — the stateful layer is 100% Supabase Cloud
                                      └───┬──────────────────┬────┘
                                          │                  │
               ┌──────────────────────────┼──────────────────┼──────────────────────────┐
-              │                          │                  │                          │
-              ▼                          ▼                  ▼                          ▼
-     ┌─────────────────┐        ┌────────────────────┐  ┌───────────────┐    ┌────────────────┐
-     │ Supabase Auth   │        │ Supabase Postgres  │  │ Cloud Tasks   │    │ Cognee Cloud   │
-     │ (JWT offline    │        │ (RLS-scoped,       │  │ 3 queues:     │    │ (memory / RAG) │
-     │ ES256/JWKS)     │        │  auth.uid()=user)  │  │ ingest, import│    │  per-user      │
-     └─────────────────┘        └────────────────────┘  │ enhance       │    │  namespaces    │
-                                                        └───────┬───────┘    └────────────────┘
-                                                            │                          ▲
-                                                            ▼                          │
-                                                ┌───────────────────────┐              │
-                                                │  Cloud Run — Workers  │──────────────┘
+              │                          │                  │
+              ▼                          ▼                  ▼
+     ┌─────────────────┐        ┌────────────────────┐  ┌───────────────┐
+     │ Supabase Auth   │        │ Supabase Postgres  │  │ Cloud Tasks   │
+     │ (JWT offline    │        │ (RLS + pgvector,   │  │ 3 queues:     │
+     │ ES256/JWKS)     │        │  auth.uid()=user)  │  │ ingest, import│
+     └─────────────────┘        └────────────────────┘  │ enhance       │
+                                                        └───────┬───────┘
+                                                                │
+                                                                ▼
+                                                ┌───────────────────────┐
+                                                │  Cloud Run — Workers  │
                                                 │  (same codebase,      │
                                                 │   worker entrypoint)  │
                                                 └─┬───────┬───────┬─────┘
@@ -127,13 +127,13 @@ localstack in this architecture — the stateful layer is 100% Supabase Cloud
 
 There are three deployable units:
 
-1. **`api`** (Cloud Run) — synchronous HTTP layer. All client requests land here. Owns auth, validation, DB writes, task enqueue, and search orchestration. No blocking I/O beyond DB and Cognee search.
+1. **`api`** (Cloud Run) — synchronous HTTP layer. All client requests land here. Owns auth, validation, DB writes, task enqueue, and search orchestration. No blocking I/O beyond DB (incl. pgvector similarity) and Gemini.
 
-2. **`workers`** (Cloud Run) — asynchronous processing layer. Pulls Cloud Tasks and runs ingestion, imports, enhances. Owns extractor calls, ffmpeg, Gemini, Groq, Cognee writes, and push emission. Shares the exact codebase with `api` — only the entrypoint differs.
+2. **`workers`** (Cloud Run) — asynchronous processing layer. Pulls Cloud Tasks and runs ingestion, imports, enhances. Owns extractor calls, ffmpeg, Gemini, Groq, pgvector writes, and push emission. Shares the exact codebase with `api` — only the entrypoint differs.
 
 3. **`cobalt`** (GKE Autopilot) — self-hosted media extractor. Called by workers only. Stateless. Upstream image unmodified.
 
-External managed services: Supabase Auth + Postgres + Storage (one vendor for the stateful layer), Cloud Tasks, Cognee Cloud, Gemini API, Groq API, PostHog, Sentry, Expo push service. GCP keeps compute + queues (Cloud Run, Cloud Tasks, GKE for Cobalt); there is no Cloud SQL / Cloud Storage / Firebase in this architecture anymore.
+External managed services: Supabase Auth + Postgres (+ pgvector) + Storage (one vendor for the stateful layer), Cloud Tasks, Gemini API, Groq API, PostHog, Sentry, Expo push service. GCP keeps compute + queues (Cloud Run, Cloud Tasks, GKE for Cobalt); there is no Cloud SQL / Cloud Storage / Firebase in this architecture anymore.
 
 ---
 
@@ -182,7 +182,7 @@ Worker.ingest(item_id):
      If ≥ 5 min: Groq Whisper transcribe → Gemini with frames + transcript.
   5. Parse StructuredSummary, validate.
    6. Upload thumbnail to Supabase Storage (`media` bucket, signed URL).
-  7. Cognee.write(namespace=user_id, item=indexed).
+  7. PgVectorStore.write(user_id, item) — embed corpus, upsert row.
   8. UPDATE items state='fully_indexed', fill summary/transcript/etc.
   9. INSERT ingestion_events row.
  10. Emit SSE event on user's channel.
@@ -216,7 +216,7 @@ Cloud Tasks fires → Worker.process_import(import_id, zip_path):
   4. For each parsed entry:
      - decide_tier(entry) → TEXT_INDEXED or FULL_MULTIMODAL
      - INSERT items ON CONFLICT do update (dedup)
-     - if TEXT_INDEXED: build text_content, batch write to Cognee (batch size 50)
+     - if TEXT_INDEXED: build text_content, batch-embed + upsert to pgvector (batch size 50)
      - if FULL_MULTIMODAL: enqueue Cloud Task ingest{item_id}, throttled queue
      - update imports counters every 100 entries
   5. For each collection:
@@ -244,7 +244,7 @@ api handler:
   1. Auth check.
   2. Optionally rewrite query with tiny Gemini call for spelling/intent (Flash-Lite).
      (v1 skip — go direct to memory.)
-  3. Cognee.search(namespace=user_id, query, filters, top_k) → list[MemoryHit].
+  3. PgVectorStore.search(user_id, query, filters, top_k) → list[MemoryHit] (cosine over user-scoped rows).
   4. SELECT items WHERE id IN (...) AND user_id=... (hydrate).
   5. Build RAG prompt: query + hits' (title, summary, transcript, hashtags).
   6. Gemini.summarize_answer(prompt) → answer + citations[].
@@ -290,8 +290,7 @@ api:
         │
         ▼
 Worker.delete_user:
-  1. Cognee.delete_namespace(user_id).
-  2. DELETE FROM items WHERE user_id=... (cascades to collection_items, ingestion_events).
+  1. DELETE FROM items WHERE user_id=... (item_embeddings rows cascade; explicit delete_namespace is a no-op-safe equivalent). WHERE user_id=... (cascades to collection_items, ingestion_events).
   3. DELETE FROM collections, saved_audio, imports, push_tokens.
   4. Enumerate Supabase Storage prefix media/{user_id}/ and delete.
   5. DELETE FROM auth.users (Supabase admin API) — cascades to profiles
@@ -397,8 +396,7 @@ spillthereel/
 │   │   │   │   │   └── registry.py
 │   │   │   │   ├── memory/
 │   │   │   │   │   ├── base.py              # MemoryStore Protocol
-│   │   │   │   │   ├── cognee_cloud.py
-│   │   │   │   │   └── cognee_oss.py        # Escape-hatch stub
+│   │   │   │   │   └── pgvector_store.py    # PgVectorStore (sole backend)
 │   │   │   │   ├── llm/
 │   │   │   │   │   ├── base.py              # SummaryModel/TranscriptionModel Protocols
 │   │   │   │   │   ├── gemini.py
@@ -547,8 +545,8 @@ spillthereel/
                                                │
                                                ▼
                                     ┌───────────────────────┐
-                                    │ MemoryStore.write     │
-                                    │  (Cognee Cloud)       │
+                                    │ PgVectorStore.write   │
+                                    │  (pgvector row)       │
                                     └──────────┬────────────┘
                                                │
                                                ▼
@@ -599,7 +597,7 @@ Any step can fail; failure is captured in `items.failure_reason` and drives the 
    │  1. taxonomy.decide_tier(entry)                     │
    │  2. Postgres UPSERT items (dedup on url_norm)       │
    │  3. If TEXT_INDEXED:                                │
-   │       batch buffer → Cognee.batch_write             │
+   │       batch buffer → pgvector batch upsert          │
    │  4. If FULL_MULTIMODAL:                             │
    │       Enqueue Cloud Task ingest{item_id}            │
    │       (rate-limited queue: 20/hr per user)          │
@@ -665,7 +663,7 @@ Any step can fail; failure is captured in `items.failure_reason` and drives the 
 **Retrieval + generation cost:** ~$0.001–$0.005 per query at Flash-Lite.
 
 **Latency budget (P95 2.5s):**
-- Cognee search: 400 ms
+- pgvector similarity: 50 ms
 - Postgres hydrate: 60 ms
 - Gemini answer: 1.6 s
 - Serialization + network: 400 ms
@@ -678,8 +676,8 @@ Any step can fail; failure is captured in `items.failure_reason` and drives the 
 
 | Environment | Region | Purpose |
 |-------------|--------|---------|
-| dev (local) | laptop | docker-compose Postgres + local FastAPI, Cognee Cloud dev namespace, real Gemini keys behind a $10/mo cap |
-| staging | us-central1 | Full mirror of prod at ~10% capacity, separate Supabase project (own Auth + Postgres + Storage), separate Cognee namespace prefix |
+| dev (local) | laptop | docker-compose pgvector Postgres + local FastAPI, real Gemini keys behind a $10/mo cap |
+| staging | us-central1 | Full mirror of prod at ~10% capacity, separate Supabase project (own Auth + Postgres + Storage, item_embeddings included) |
 | prod | us-central1 primary | Live app |
 
 ### 9.2 Prod network diagram
@@ -696,7 +694,7 @@ Any step can fail; failure is captured in `items.failure_reason` and drives the 
                    ▼
     ┌──────────────────────────────┐
     │ Cloud Run — api (public)     │◄──── outbound: Supabase (Auth + Postgres + Storage),
-    │ 1 vCPU / 512MiB / min 1 max 20│                Cognee, Gemini
+    │ 1 vCPU / 512MiB / min 1 max 20│                Gemini (+ pgvector via Postgres)
     └──────────────┬───────────────┘
                    │ HTTPS to Supabase pooler:6543
                    ▼
@@ -712,7 +710,7 @@ Any step can fail; failure is captured in `items.failure_reason` and drives the 
     └──────────────┬───────────────┘
                    ▼ push HTTPS
     ┌──────────────────────────────┐
-    │ Cloud Run — worker (internal)│──── outbound: Cobalt, Gemini, Groq, Cognee,
+    │ Cloud Run — worker (internal)│──── outbound: Cobalt, Gemini, Groq,
     │ 2 vCPU / 2 GiB / min 0 max 30│                Supabase (via service-role key)
     └──────────────────────────────┘
 
@@ -783,7 +781,7 @@ Client                                    Supabase Auth              Backend
 | Item metadata | Supabase `items` | Indefinite, until item/account delete |
 | Item summary / transcript / caption | Supabase `items` (long text cols) | Same |
 | Ingestion audit trail | Supabase `ingestion_events` | 90 days (rolling delete job) |
-| Cognee memory | Cognee Cloud | Same as item lifetime |
+| Item embeddings | Supabase `item_embeddings` (vector rows) | Same as item lifetime (FK cascades) |
 | Thumbnails | Supabase Storage `media/thumbs/{user_id}/{item_id}.jpg` | Indefinite until delete |
 | Source video (worker tmp) | Worker container tmpfs | Deleted within 15 min of processing |
 | IG export ZIP | Worker tmpfs | Deleted after parse or 15 min |
@@ -823,7 +821,7 @@ Mobile:
   there is nothing stateful to emulate locally).
 ```
 
-Cognee Cloud is accessed with a dev-tier API key. Gemini/Groq use rate-capped dev keys.
+No memory-vendor key exists. Gemini/Groq use rate-capped dev keys.
 
 ---
 
@@ -844,7 +842,7 @@ Places designed for future feature expansion without re-architecting:
 
 - Single-region v1 is sufficient (< 100 ms P50 latency to users on non-US ISPs is acceptable).
 - Cloud Run cold starts (~1 s) are tolerable since first request goes through Cloud LB.
-- Cognee Cloud is available (>= 99.5% SLO).
+- Supabase Postgres (incl. pgvector) meets its managed SLO; similarity is a local index lookup, no external hop.
 - Instagram, TikTok, YouTube, X don't drop unauthenticated public URL access wholesale.
 - GKE Autopilot for Cobalt is cheaper than dedicating Cloud Run RAM to it at expected scale (revisit if Cobalt QPS < 10).
 

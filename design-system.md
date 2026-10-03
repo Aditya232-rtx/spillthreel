@@ -661,7 +661,7 @@ Use these as-is when handing a screen to Claude design or a designer.
 - ❌ **No settings screen that uses more than 2 colors.** Utility archetype = cream + ink. Enforce.
 - ❌ **No progress bar without a numeric value beside it.** Users deserve the number.
 - ❌ **No text-only error states.** Every error gets a coral state chip and a retry action.
-- ❌ **No "on-device model" / "process on this device" language** — this is a myth from the rough HTML. We use cloud (Gemini + Cognee). If a settings toggle says anything about local processing, cut it.
+- ❌ **No "on-device model" / "process on this device" language** — this is a myth from the rough HTML. We use cloud (Gemini). If a settings toggle says anything about local processing, cut it.
 - ❌ **No inflated stats.** The Home stat card shows real counts; if the user has 3 saves, it says "3", not "003" or "3+".
 
 ---

@@ -1,5 +1,29 @@
 # Changelog
 
+## Unreleased — pgvector memory layer replaces Cognee Cloud
+
+Why: nothing in the feature set uses graph extraction — plain cosine search
+over user-scoped rows suffices. Supabase Postgres already ships pgvector,
+and Gemini embeddings cost ~1/500th per document. No new vendors, no new
+base cost, no account to create.
+
+- **Store**: new `PgVectorStore` (`write`/`write_batch` with one batched
+  Gemini call, `search` with cosine + platform/category/collection/state/
+  since filters joined vs `items`, `similar` from stored vectors,
+  user-scoped deletes, cascade-backed `delete_namespace` equivalent).
+- **Embeddings**: `GeminiEmbeddingModel.embed_batch`
+  (`gemini-embedding-001`, `output_dimensionality=768`, SEMANTIC_SIMILARITY).
+- **Schema**: `item_embeddings(item_id PK→items CASCADE, user_id→profiles
+  CASCADE, embedding vector(768), created_at)` + HNSW cosine index;
+  `items.cognee_id` dropped. New Alembic head `20260930_0001_pgvector_memory`.
+- **Call sites**: pipeline step 7 writes pgvector rows; item delete wipes
+  its vector; account deletion cascades automatically.
+- **Tests**: write+search round-trip suite (mocked embedder, real
+  Postgres+HNSW in CI via a pgvector service container; skips cleanly
+  without a DB).
+- **Docs**: TRD §10 + cost model, architecture (incl. service diagram),
+  PRD, build phases, updates, and design docs rewritten around pgvector.
+
 ## Unreleased — Phase 0 completion (infra, builds, observability)
 
 Why: application code was ahead of Phase 0 while infrastructure sat at zero —

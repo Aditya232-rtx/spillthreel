@@ -14,7 +14,7 @@ const STORAGE_KEY = 'spillthereel.userCategories.v1';
  *
  * Backend contract (see trd.md §6.3, F8 flow): once wired up, seed
  * categories arrive from `GET /v1/categories?source=auto` and mirror
- * the server's Cognee-driven auto-tagging. User categories POST to
+ * the server's embedding-driven auto-tagging. User categories POST to
  * `/v1/categories` and drive an incremental re-tag over the user's
  * library (server-side background job). This hook shims that surface
  * for v1 with local-only persistence — swap the AsyncStorage reads/

@@ -9,7 +9,7 @@
 
 ## 1. Product Summary
 
-**SpillTheReel** is a cross-platform mobile "second brain" for saved short-form social media content. Users share any Reel / Short / TikTok / X video / post URL into the app; the backend downloads the media, extracts audio + key visual frames, uses multimodal AI (Gemini) to generate a rich searchable summary, and stores the result in a semantic/graph memory layer (Cognee). Users then query their library in natural language ("the red car reel", "the ramen recipe with miso", "the workout with the resistance band") and get an answer with the source content preview and deep link back to the original post.
+**SpillTheReel** is a cross-platform mobile "second brain" for saved short-form social media content. Users share any Reel / Short / TikTok / X video / post URL into the app; the backend downloads the media, extracts audio + key visual frames, uses multimodal AI (Gemini) to generate a rich searchable summary, and stores the result as a semantic embedding in Postgres (pgvector). Users then query their library in natural language ("the red car reel", "the ramen recipe with miso", "the workout with the resistance band") and get an answer with the source content preview and deep link back to the original post.
 
 New users can also **bulk-import their entire Instagram save history** (thousands of reels + collections) from Instagram's official data export in a single onboarding step — captions, hashtags, and creators become instantly searchable with zero video processing cost.
 
@@ -165,7 +165,7 @@ Saves educational shorts (finance, science, coding, languages). Wants to build a
   }
   ```
 - **F2.6 — Thumbnail generation.** Middle-frame thumbnail + poster frame extracted with `ffmpeg`, stored in Cloud Storage, served via signed URL.
-- **F2.7 — Memory-layer indexing.** Summary + transcript + metadata written to **Cognee Cloud** with the user's namespace. Cognee builds embeddings + graph nodes + relationships automatically.
+- **F2.7 — Memory-layer indexing.** Summary + transcript + metadata embedded via Gemini and upserted to the user's pgvector rows. Embeddings + HNSW index live in our own Postgres; no external memory vendor.
 - **F2.8 — Auto-categorization.** Topics from F2.5 are mapped to a canonical taxonomy (Food, Fitness, Travel, Tech, Fashion, Finance, DIY, Comedy, Education, Product, Music, Other) for filter chips in the UI. If the user imported Instagram Collections, their custom collection names are preserved as additional user-defined categories.
 - **F2.9 — Item lifecycle states.** Each item has one of these states:
 
@@ -174,7 +174,7 @@ Saves educational shorts (finance, science, coding, languages). Wants to build a
   | `queued` | Waiting for worker |
   | `downloading` | Extractor running |
   | `analyzing` | Gemini processing |
-  | `indexing` | Writing to Cognee |
+  | `indexing` | Writing embedding to pgvector |
   | `text_indexed` | Only caption/hashtags indexed (bulk-import path) |
   | `fully_indexed` | Complete multimodal indexing done |
   | `source_gone` | Original URL 404s; metadata-only entry preserved |
@@ -200,7 +200,7 @@ Saves educational shorts (finance, science, coding, languages). Wants to build a
 
 **Sub-features:**
 
-- **F3.1 — Query understanding.** User query is passed to Cognee's retrieval pipeline (semantic + graph). Cognee returns top-K candidate items with relevance scores.
+- **F3.1 — Query understanding.** User query is embedded the same way and matched by cosine similarity over the user's pgvector rows (plus filters). The store returns top-K candidate items with relevance scores.
 - **F3.2 — Answer synthesis.** Top candidates + query are sent to Gemini with a RAG prompt to produce a conversational answer citing specific items.
 - **F3.3 — Multi-modal query surface.** Search is invoked from three entry points:
   - **Search tab** — dedicated screen, chat-like UI with query history.
@@ -233,7 +233,7 @@ Saves educational shorts (finance, science, coding, languages). Wants to build a
 - **F4.4 — Platform tabs.** Toggle to filter by source platform.
 - **F4.5 — Item detail view.** Full-screen sheet showing: thumbnail (auto-plays a 3-sec loop if we cached one), full summary, transcript, tags, save date, source URL, "Open original" button, "Enhance with video analysis" button (only shown if `text_indexed`), "Delete" and "Ask about this reel" buttons.
 - **F4.6 — Manual re-tagging.** Long-press a card → menu with "Move to category", "Move to collection", "Add tag". User taxonomy overrides auto-tags.
-- **F4.7 — Delete.** Deletes the item from Cognee, Postgres, and Cloud Storage. Confirmation modal.
+- **F4.7 — Delete.** Deletes the item (and its embedding row, via FK cascade) from Postgres, plus the Cloud Storage thumbnail. Confirmation modal.
 - **F4.8 — Bulk actions.** Multi-select with long-press → bulk delete, bulk tag, or bulk enhance (queue all selected `text_indexed` items into the full multimodal pipeline).
 - **F4.9 — Empty state.** For new users who skipped bulk import: illustrated onboarding walkthrough of the share-sheet flow with a "Try me" demo reel we pre-load.
 
@@ -255,7 +255,7 @@ Saves educational shorts (finance, science, coding, languages). Wants to build a
   - Import is repeatable — the user can upload a fresh export ZIP at any time to backfill newer saves (F8.8 dedup handles this cleanly).
 - **F5.5 — Share-extension permission onboarding.** After sign-in (regardless of whether the user imported, skipped-for-now, or skipped-forever), an interactive 3-step guide shows the user how to trigger the share sheet from Instagram, how SpillTheReel appears, and confirms they've completed one test save before dismissing.
 - **F5.6 — Sign-out.** Full local wipe (SecureStore + async storage + query cache).
-- **F5.7 — Account deletion.** Required for App Store compliance. Deletes the user's Cognee namespace, Supabase Postgres rows (RLS-scoped cascade), Supabase Storage bucket subfolder, and the Supabase Auth user record (which is the PK — a single `DELETE FROM auth.users` cascades everything else).
+- **F5.7 — Account deletion.** Required for App Store compliance. Deletes the user's Supabase Postgres rows (RLS-scoped cascade, embeddings included), Supabase Storage bucket subfolder, and the Supabase Auth user record (which is the PK — a single `DELETE FROM auth.users` cascades everything else).
 - **F5.8 — Push notification permission.** Requested on first successful save ("We'll ping you when it's ready to search") — deferred permission ask, not on first launch.
 
 ---
@@ -398,7 +398,7 @@ Cost-control guardrails **while free tier is unlimited**:
 
 - All API traffic HTTPS/TLS 1.3.
 - Supabase JWTs validated on every request.
-- Per-user data isolation enforced at THREE layers: (a) Supabase Postgres Row-Level Security policies, (b) Cognee per-user namespaces, (c) application-level `WHERE user_id = auth.uid()` filters as defense-in-depth. Every query passes all three checks.
+- Per-user data isolation enforced at THREE layers: (a) Supabase Postgres Row-Level Security policies, (b) pgvector `user_id`-scoped queries (FK-enforced), (c) application-level `WHERE user_id = auth.uid()` filters as defense-in-depth. Every query passes all three checks.
 - Bulk-import ZIP is streamed to backend, parsed in-memory (or in an ephemeral tmpfs), and destroyed after processing. **Original ZIP is never persisted to durable storage.**
 - No sharing of user data with third parties beyond the LLM providers (Gemini, Groq) — and those receive only the media content the user explicitly submitted or imported.
 - No storage of user's IG/TikTok credentials — we never ask for them; we only accept public URLs from the share sheet and Meta-issued data exports.
@@ -469,7 +469,7 @@ User has been using the app via share-sheet only → generates a fresh Meta expo
 ### 10.3 Save via share sheet
 
 In IG → tap Share on a reel → share sheet → tap SpillTheReel → toast "Saved ✓" → stay in IG.
-(In background: URL posted → Cloud Task queued → worker downloads → Gemini analyzes → Cognee indexes → push "1 reel ready".)
+(In background: URL posted → Cloud Task queued → worker downloads → Gemini analyzes → pgvector upsert → push "1 reel ready".)
 
 ### 10.4 Search
 
@@ -488,7 +488,7 @@ Push "Couldn't save that reel" → tap → app opens on the failed item detail �
 ## 11. Assumptions & Dependencies
 
 - Gemini API availability and pricing remain within 30% of Sept 2026 published rates.
-- Cognee Cloud SLA holds; if it degrades, we have the OSS-adapter escape hatch.
+- Supabase Postgres (pgvector) SLO holds; similarity is a local index lookup with no external dependency to degrade.
 - Cobalt self-hosted remains a functional extractor for IG/TikTok/X. If a platform hard-blocks it, we fall back to yt-dlp and log ingestion failures for reactive fixes.
 - Instagram, TikTok, YouTube, and X do not fundamentally break their share-URL formats.
 - Meta's data export continues to include Caption + Hashtags + Owner fields for saved posts (verified against the user's Aug 2026 export). Parser is schema-tolerant if fields disappear.
@@ -502,7 +502,7 @@ Push "Couldn't save that reel" → tap → app opens on the failed item detail �
 |------|--------|-----------|------------|
 | Extractor breakage (IG/TikTok anti-bot escalation) | High | Medium | Multi-extractor fallback chain; monitoring per-platform success rate; ability to hot-swap adapters |
 | Gemini API cost overrun | High | Medium | Tiered processing (F8.4); Flash-first policy; batch API for non-urgent reprocessing; hard budget alerts |
-| Cognee Cloud outage | High | Low | OSS adapter behind same interface; can migrate namespace via API export |
+| Postgres/pgvector outage | High | Low | Supabase managed backups + PITR; similarity degrades to keyword fallback while down |
 | App Store rejection of share extension | Medium | Low | Pattern is well-precedented; test build reviewed by TestFlight external testers first |
 | Copyright/DMCA claim from creators | Medium | Low | We don't rehost media; thumbnails are fair-use previews; original URL always deep-linked back; DMCA takedown process documented |
 | Meta changes data export schema | Medium | Medium | Schema-tolerant parser; schema-version detector alerts us within 24h of first affected import; hotfix cycle < 48h |
@@ -557,7 +557,7 @@ Push "Couldn't save that reel" → tap → app opens on the failed item detail �
 - **Ingestion** — the backend pipeline that turns a URL into an indexed item.
 - **Item** — one indexed piece of content in a user's library.
 - **Collection** — a user-defined folder of items, imported from Instagram Collections or created in-app.
-- **Cognee namespace** — per-user isolated memory partition in Cognee.
+- **Embedding row** — one `item_embeddings` row per indexed item (user-scoped vector + FK cascades).
 - **Extractor** — a platform-specific module that resolves a source URL to downloadable media.
 - **Text-indexed / fully-indexed** — the two primary processing tiers per item state (F2.9).
 - **Enhance** — upgrading a text-indexed item to fully-indexed via user-initiated full multimodal processing.
