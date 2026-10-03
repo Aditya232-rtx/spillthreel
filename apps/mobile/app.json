@@ -38,6 +38,30 @@
     ],
     "experiments": {
       "typedRoutes": true
-    }
+    },
+    "extra": {
+      "router": {},
+      "eas": {
+        "build": {
+          "experimental": {
+            "ios": {
+              "appExtensions": [
+                {
+                  "targetName": "ShareExtension",
+                  "bundleIdentifier": "com.spillthereel.app.share-extension",
+                  "entitlements": {
+                    "com.apple.security.application-groups": [
+                      "group.com.spillthereel.app"
+                    ]
+                  }
+                }
+              ]
+            }
+          }
+        },
+        "projectId": "10058262-c318-427d-b454-def6796e31ff"
+      }
+    },
+    "owner": "adityaaa0986"
   }
 }
