@@ -11,6 +11,7 @@ from __future__ import annotations
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
+import asyncpg
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
     AsyncSession,
@@ -22,6 +23,7 @@ from app.settings import get_settings
 
 _engine: AsyncEngine | None = None
 _session_factory: async_sessionmaker[AsyncSession] | None = None
+_pg_pool: asyncpg.Pool | None = None
 
 
 def get_engine() -> AsyncEngine:
@@ -66,3 +68,27 @@ async def session_scope() -> AsyncIterator[AsyncSession]:
     """Use in worker code that isn't inside a FastAPI request."""
     async with _get_session_factory()() as session:
         yield session
+
+
+async def get_pg_pool() -> asyncpg.Pool:
+    """Shared raw-asyncpg pool for pgvector similarity queries.
+
+    Separate from the SQLAlchemy engine on purpose: pgvector similarity
+    uses raw SQL with the `<=>` operator plus a per-connection codec
+    (`register_vector`), which is simplest on a plain asyncpg pool.
+    DSN is derived from the same DATABASE_URL setting (asyncpg scheme).
+    """
+    global _pg_pool
+    if _pg_pool is None:
+        settings = get_settings()
+        dsn = settings.database_url.replace("postgresql+asyncpg://", "postgresql://", 1)
+        _pg_pool = await asyncpg.create_pool(dsn, min_size=1, max_size=5)
+    return _pg_pool
+
+
+async def close_pg_pool() -> None:
+    """Close the shared pgvector pool (tests / shutdown)."""
+    global _pg_pool
+    if _pg_pool is not None:
+        await _pg_pool.close()
+        _pg_pool = None

@@ -4,7 +4,7 @@ Deletion is async: the endpoint soft-flags `profiles.deleted_at`, then
 enqueues a `delete_user` task. The task calls Supabase Admin API's
 `auth.admin.deleteUser(id)` which cascades to `profiles` (FK ON DELETE
 CASCADE), which in turn cascades to every user-scoped table. It also
-purges the user's Cognee namespace and the `media/{user_id}/` prefix in
+purges the user's pgvector embeddings and the `media/{user_id}/` prefix in
 Supabase Storage (see architecture.md §4.5).
 """
 

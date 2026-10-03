@@ -15,7 +15,7 @@ _logger = get_logger(__name__)
 async def dispatch_local(task_type: str, payload: dict[str, str | int | float]) -> None:
     """Local shim — routes to the same worker handlers Cloud Tasks would.
 
-    Deferred imports keep worker-only deps (google-genai, cognee, yt-dlp)
+    Deferred imports keep worker-only deps (google-genai, yt-dlp)
     off the api container's import graph until they're actually needed.
     """
     _logger.info("task.local.dispatch", task_type=task_type, payload=payload)

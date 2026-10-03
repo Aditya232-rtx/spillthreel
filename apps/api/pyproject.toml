@@ -1,7 +1,7 @@
 [project]
 name = "spillthereel-api"
 version = "0.1.0"
-description = "SpillTheReel backend — FastAPI + Cognee + Gemini pipeline"
+description = "SpillTheReel backend — FastAPI + pgvector + Gemini pipeline"
 readme = "README.md"
 requires-python = ">=3.12"
 license = { text = "UNLICENSED" }
@@ -30,6 +30,8 @@ dependencies = [
   # Utilities
   "python-dotenv>=1.0",
   "slowapi>=0.1.10",
+  # Vector embeddings
+  "pgvector>=0.2.0",
 ]
 
 [project.optional-dependencies]
@@ -37,10 +39,8 @@ worker = [
   # LLM providers
   "google-genai>=1.3",
   "groq>=0.14",
-  # Memory layer
-  "cognee>=1.2",
   # Media extraction (bundled in worker container only)
-  "yt-dlp>=2024.12.13",
+  "yt-dlp>=2026.8.19",
   "gallery-dl>=1.28",
   # Parser
   "beautifulsoup4>=4.12",
@@ -72,10 +72,10 @@ python_version = "3.12"
 strict = true
 plugins = ["pydantic.mypy"]
 
-# yt-dlp ships no type stubs (and typeshed has none). Standard idiom:
-# don't punish our code for an untyped third-party import.
+# yt-dlp and asyncpg ship no type stubs (and typeshed has none).
+# Standard idiom: don't punish our code for untyped third-party imports.
 [[tool.mypy.overrides]]
-module = "yt_dlp.*"
+module = ["yt_dlp.*", "asyncpg.*"]
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]

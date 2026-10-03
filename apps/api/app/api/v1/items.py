@@ -14,7 +14,9 @@ from pydantic import BaseModel
 from sqlalchemy import and_, desc, select
 
 from app.auth.middleware import CurrentUser, DbSession
+from app.db.engine import get_pg_pool
 from app.db.models import Item
+from app.services.memory.pgvector_store import PgVectorStore
 
 router = APIRouter()
 
@@ -96,4 +98,7 @@ async def delete_item(item_id: str, user: CurrentUser, session: DbSession) -> No
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
     await session.delete(item)
     await session.commit()
-    # TODO(phase-1): call MemoryStore.delete(user.id, item.id) once cognee_cloud lands.
+
+    # Embedding row cascades via FK, but delete explicitly too so the
+    # vector is gone even if the row delete ever stops cascading.
+    await PgVectorStore(await get_pg_pool()).delete(user.id, item_id)

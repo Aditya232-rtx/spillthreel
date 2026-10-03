@@ -9,7 +9,7 @@ canonical 11-step flow documented in architecture.md §4.1:
   4. Long-audio branch: Groq Whisper transcribe if duration ≥ 5 min.
   5. Gemini multimodal summarize (short) or transcript-informed (long).
   6. Upload thumbnail to Supabase Storage under `{user_id}/{item_id}.jpg`.
-  7. MemoryStore.write() into user's Cognee namespace.
+  7. MemoryStore.write() into pgvector (user-scoped embedding row).
   8. UPDATE items: state='fully_indexed', hydrate summary/transcript/etc.
   9. INSERT ingestion_events row.
  10. Emit SSE event on the user's channel (Phase 3 — stubbed here).
@@ -32,7 +32,7 @@ import ulid
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.engine import session_scope
+from app.db.engine import get_pg_pool, session_scope
 from app.db.models import IngestionEvent, Item
 from app.observability.logging import get_logger
 from app.services.extractors.registry import extract as extractor_extract
@@ -47,7 +47,7 @@ from app.services.media.supabase_storage import (
     upload_object as storage_upload,
 )
 from app.services.memory.base import IndexedItem
-from app.services.memory.cognee_cloud import CogneeCloudStore
+from app.services.memory.pgvector_store import PgVectorStore
 from app.settings import get_settings
 
 _logger = get_logger(__name__)
@@ -160,7 +160,7 @@ async def _run(ctx: _RunContext, item: Item) -> None:
         ttl_seconds=60 * 60 * 24 * 30,  # 30d — matches Cloud CDN cache TTL
     )
 
-    # Step 7: write into Cognee under the user's namespace.
+    # Step 7: embed + write into pgvector, scoped to the user.
     text_corpus = "\n".join(
         filter(
             None,
@@ -177,7 +177,7 @@ async def _run(ctx: _RunContext, item: Item) -> None:
             ],
         )
     )
-    cognee_id = await CogneeCloudStore().write(
+    await PgVectorStore(await get_pg_pool()).write(
         user_id=ctx.user_id,
         item=IndexedItem(
             item_id=ctx.item_id,
@@ -206,7 +206,6 @@ async def _run(ctx: _RunContext, item: Item) -> None:
         owner_username=result.original_owner.username if result.original_owner else None,
         owner_url=result.original_owner.url if result.original_owner else None,
         caption=result.original_caption,
-        cognee_id=cognee_id,
     )
 
     # Steps 10-11 (SSE + push): Phase 3 — logging placeholder here so
@@ -299,7 +298,6 @@ async def _mark_fully_indexed(
     owner_username: str | None,
     owner_url: str | None,
     caption: str | None,
-    cognee_id: str,
 ) -> None:
     async with session_scope() as session:
         item = (await session.execute(select(Item).where(Item.id == item_id))).scalar_one()
@@ -315,7 +313,6 @@ async def _mark_fully_indexed(
         item.owner_url = item.owner_url or owner_url
         item.duration_seconds = float(summary.duration_seconds or 0.0)
         item.thumbnail_url = thumbnail_url
-        item.cognee_id = cognee_id
         item.updated_at = datetime.now(UTC)
         session.add(
             IngestionEvent(
@@ -323,7 +320,7 @@ async def _mark_fully_indexed(
                 item_id=item.id,
                 from_state=prev_state,
                 to_state="fully_indexed",
-                detail={"cognee_id": cognee_id},
+                detail={},
             )
         )
         await session.commit()

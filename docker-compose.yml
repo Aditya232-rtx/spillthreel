@@ -11,7 +11,7 @@
 
 services:
   postgres:
-    image: postgres:16-alpine
+    image: pgvector/pgvector:pg16
     environment:
       POSTGRES_USER: spill
       POSTGRES_PASSWORD: spill
@@ -48,8 +48,6 @@ services:
       COBALT_API_KEY: ${COBALT_API_KEY:-}
       GEMINI_API_KEY: ${GEMINI_API_KEY:-}
       GROQ_API_KEY: ${GROQ_API_KEY:-}
-      COGNEE_API_KEY: ${COGNEE_API_KEY:-}
-      COGNEE_BASE_URL: ${COGNEE_BASE_URL:-https://api.cognee.ai}
       # --- Observability / guards ---
       SENTRY_DSN: ${SENTRY_DSN:-}
       SENTRY_RELEASE: ${SENTRY_RELEASE:-}

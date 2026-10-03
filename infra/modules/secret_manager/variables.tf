@@ -14,7 +14,6 @@ variable "secret_ids" {
     "SUPABASE_SECRET_KEY",
     "GEMINI_API_KEY",
     "GROQ_API_KEY",
-    "COGNEE_API_KEY",
     "COBALT_API_KEY",
     "SENTRY_DSN",
   ]

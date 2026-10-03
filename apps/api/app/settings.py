@@ -103,10 +103,6 @@ class Settings(BaseSettings):
     groq_api_key: str | None = None
     groq_asr_model: str = "whisper-large-v3-turbo"
 
-    # ---------------- Memory layer ----------------
-    cognee_api_key: str | None = None
-    cognee_base_url: str = "https://api.cognee.ai"
-
     # ---------------- Observability ----------------
     sentry_dsn: str | None = None
     sentry_release: str | None = Field(

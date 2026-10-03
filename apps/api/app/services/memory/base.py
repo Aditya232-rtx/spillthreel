@@ -1,8 +1,8 @@
 """MemoryStore protocol — the swappable interface to the memory layer.
 
-Implementations: cognee_cloud.py (v1 default), cognee_oss.py (escape hatch).
-Namespacing rule: every call MUST scope to `dataset=f"user_{user_id}"`
-(TRD §10.2) — implementations enforce this internally.
+Implementation: pgvector_store.py (sole backend — embeddings in our own
+Postgres). Isolation rule: every call MUST scope to the authenticated
+`user_id` (TRD §10.2) — implementations enforce this internally.
 """
 
 from __future__ import annotations
@@ -40,7 +40,7 @@ MemoryTier = Literal["text_only", "multimodal"]
 
 class MemoryStore(Protocol):
     async def write(self, user_id: str, item: IndexedItem) -> str:
-        """Returns a memory-layer id (stored on items.cognee_id)."""
+        """Returns the item_id (primary key of the embedding row)."""
         ...
 
     async def write_batch(self, user_id: str, items: list[IndexedItem]) -> list[str]:

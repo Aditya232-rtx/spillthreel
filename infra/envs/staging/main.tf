@@ -27,7 +27,6 @@ locals {
     "DATABASE_URL",
     "GEMINI_API_KEY",
     "GROQ_API_KEY",
-    "COGNEE_API_KEY",
     "COBALT_API_KEY",
     "SENTRY_DSN",
   ]
@@ -49,7 +48,6 @@ locals {
     GEMINI_MODEL_FLASH        = "gemini-2.5-flash"
     GEMINI_MODEL_PRO          = "gemini-2.5-pro"
     GROQ_ASR_MODEL            = "whisper-large-v3-turbo"
-    COGNEE_BASE_URL           = "https://api.cognee.ai"
     RATE_LIMIT_DEFAULT        = "60/minute"
     RATE_LIMIT_SAVES          = "10/minute"
     CORS_ALLOWED_ORIGINS      = var.cors_allowed_origins
@@ -60,7 +58,6 @@ locals {
     DATABASE_URL        = "DATABASE_URL"
     GEMINI_API_KEY      = "GEMINI_API_KEY"
     GROQ_API_KEY        = "GROQ_API_KEY"
-    COGNEE_API_KEY      = "COGNEE_API_KEY"
     COBALT_API_KEY      = "COBALT_API_KEY"
     SENTRY_DSN          = "SENTRY_DSN"
   }

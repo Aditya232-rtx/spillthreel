@@ -157,3 +157,60 @@ def _part_from_audio(path: Path) -> Any:
     data = path.read_bytes()
     # 16kHz mono WAV per media/ffmpeg.py extract_audio conventions.
     return genai_types.Part.from_bytes(data=data, mime_type="audio/wav")
+
+
+# ---------------------------------------------------------------------------
+# Gemini Embedding Model — for pgvector embeddings
+# ---------------------------------------------------------------------------
+
+
+class GeminiEmbeddingModel:
+    """Embedding model using Gemini's embedding API.
+
+    Uses `gemini-embedding-001` which outputs 768-dimensional vectors.
+    Cost: $0.15/1M input tokens (as of 2026).
+    """
+
+    def __init__(self, model: str | None = None) -> None:
+        self._model = model or "gemini-embedding-001"
+
+    async def embed_batch(self, texts: list[str]) -> list[list[float]]:
+        """Embed a batch of texts using Gemini's embedding API.
+
+        Returns a list of embeddings, one per input text.
+        Each embedding is a list of 768 floats.
+        """
+        if not texts:
+            return []
+
+        settings = get_settings()
+        if not settings.gemini_api_key:
+            raise RuntimeError("gemini_api_key not configured")
+
+        from google import genai
+        from google.genai import types as genai_types
+
+        client = genai.Client(api_key=settings.gemini_api_key)
+
+        # Batch embed - gemini-embedding-001 supports batch inputs
+        response = await client.aio.models.embed_content(
+            model=self._model,
+            contents=texts,
+            config=genai_types.EmbedContentConfig(
+                task_type="SEMANTIC_SIMILARITY",
+                output_dimensionality=768,
+            ),
+        )
+
+        if not response.embeddings:
+            raise RuntimeError("gemini returned no embeddings")
+        embeddings: list[list[float]] = []
+        for embedding in response.embeddings:
+            if embedding.values is None:
+                raise RuntimeError("gemini returned an empty embedding vector")
+            embeddings.append([float(v) for v in embedding.values])
+        if len(embeddings) != len(texts):
+            raise RuntimeError(
+                f"gemini returned {len(embeddings)} embeddings for {len(texts)} texts"
+            )
+        return embeddings

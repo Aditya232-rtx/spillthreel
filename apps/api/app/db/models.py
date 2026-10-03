@@ -9,6 +9,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any, ClassVar
 
+from pgvector.sqlalchemy import Vector
 from sqlalchemy import (
     ARRAY,
     JSON,
@@ -125,7 +126,6 @@ class Item(Base):
     duration_seconds: Mapped[float | None] = mapped_column(Float, default=None)
     thumbnail_url: Mapped[str | None] = mapped_column(Text, default=None)
     failure_reason: Mapped[str | None] = mapped_column(Text, default=None)
-    cognee_id: Mapped[str | None] = mapped_column(String, default=None)
 
     created_at: Mapped[datetime] = mapped_column(
         TIMESTAMP(timezone=True), server_default=text("now()"), init=False
@@ -158,12 +158,38 @@ class Category(Base):
 
     emoji: Mapped[str | None] = mapped_column(String, default=None)
     origin_id: Mapped[str | None] = mapped_column(String, default=None)
+    # Reserved for a future centroid vector id in the same item_embeddings
+    # embedding space (e.g. category auto-discovery). Unused today — no
+    # clustering feature reads or writes it.
     centroid_id: Mapped[str | None] = mapped_column(String, default=None)
 
     created_at: Mapped[datetime] = mapped_column(
         TIMESTAMP(timezone=True), server_default=text("now()"), init=False
     )
     updated_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True), server_default=text("now()"), init=False
+    )
+
+
+class ItemEmbedding(Base):
+    """One row per indexed item: its Gemini embedding vector.
+
+    `embedding` lives in the same 768-dim space as PgVectorStore queries
+    (see app/services/memory/pgvector_store.py EMBEDDING_DIM). Both FKs
+    cascade, so item delete and account delete wipe vectors automatically.
+    """
+
+    __tablename__ = "item_embeddings"
+    __table_args__ = (Index("ix_item_embeddings_user_id", "user_id"),)
+
+    item_id: Mapped[str] = mapped_column(
+        String, ForeignKey("items.id", ondelete="CASCADE"), primary_key=True
+    )
+    user_id: Mapped[str] = mapped_column(
+        String, ForeignKey("profiles.id", ondelete="CASCADE"), nullable=False
+    )
+    embedding: Mapped[list[float]] = mapped_column(Vector(768), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
         TIMESTAMP(timezone=True), server_default=text("now()"), init=False
     )
 
