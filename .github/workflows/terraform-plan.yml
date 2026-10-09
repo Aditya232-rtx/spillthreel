@@ -20,7 +20,7 @@ jobs:
   fmt-and-validate:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: hashicorp/setup-terraform@v3
         with:
@@ -54,7 +54,7 @@ jobs:
       TF_VAR_supabase_publishable_key: ${{ vars.SUPABASE_PUBLISHABLE_KEY }}
       TF_VAR_cors_allowed_origins: ${{ vars.CORS_ALLOWED_ORIGINS }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: hashicorp/setup-terraform@v3
         with:
