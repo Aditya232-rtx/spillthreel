@@ -1895,6 +1895,7 @@ dependencies = [
 
 [package.optional-dependencies]
 dev = [
+    { name = "beautifulsoup4" },
     { name = "mypy" },
     { name = "pytest" },
     { name = "pytest-asyncio" },
@@ -1919,6 +1920,7 @@ worker = [
 requires-dist = [
     { name = "alembic", specifier = ">=1.14" },
     { name = "asyncpg", specifier = ">=0.30" },
+    { name = "beautifulsoup4", marker = "extra == 'dev'", specifier = ">=4.12" },
     { name = "beautifulsoup4", marker = "extra == 'worker'", specifier = ">=4.12" },
     { name = "fastapi", specifier = ">=0.115" },
     { name = "gallery-dl", marker = "extra == 'worker'", specifier = ">=1.28" },

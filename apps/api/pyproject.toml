@@ -59,6 +59,7 @@ dev = [
   "pytest-cov>=6.0",
   "ruff>=0.8",
   "mypy>=1.13",
+  "beautifulsoup4>=4.12",
   "types-beautifulsoup4>=4.12",
 ]
 
@@ -79,6 +80,14 @@ plugins = ["pydantic.mypy"]
 # Standard idiom: don't punish our code for untyped third-party imports.
 [[tool.mypy.overrides]]
 module = ["yt_dlp.*", "asyncpg.*"]
+ignore_missing_imports = true
+
+# Worker-only deps (google-genai, groq, google-auth live in the `worker`
+# extra): the api image stays lean via deferred (function-level) imports,
+# and api-ci syncs `--extra dev` only. Tell mypy the imports are
+# intentionally absent here rather than installing worker deps into CI.
+[[tool.mypy.overrides]]
+module = ["groq.*", "google.*"]
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]
