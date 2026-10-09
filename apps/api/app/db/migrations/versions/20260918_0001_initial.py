@@ -26,6 +26,8 @@ depends_on: str | Sequence[str] | None = None
 
 
 def upgrade() -> None:
+    # NOTE: one statement per op.execute — asyncpg (the online migration
+    # driver) rejects multi-command prepared statements.
     # ------------------------------------------------------------------
     # profiles — mirrors auth.users. FK to auth schema declared in raw
     # SQL because SQLAlchemy can't cross Postgres schemas cleanly.
@@ -39,12 +41,12 @@ def upgrade() -> None:
           updated_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
           deleted_at    TIMESTAMPTZ
         );
-
-        ALTER TABLE profiles ENABLE ROW LEVEL SECURITY;
-        CREATE POLICY profiles_select_own ON profiles FOR SELECT USING (auth.uid() = id);
-        CREATE POLICY profiles_update_own ON profiles FOR UPDATE USING (auth.uid() = id);
-
-        -- Auto-create profile row on new Supabase Auth signup.
+    """)
+    op.execute("ALTER TABLE profiles ENABLE ROW LEVEL SECURITY;")
+    op.execute("CREATE POLICY profiles_select_own ON profiles FOR SELECT USING (auth.uid() = id);")
+    op.execute("CREATE POLICY profiles_update_own ON profiles FOR UPDATE USING (auth.uid() = id);")
+    # Auto-create profile row on new Supabase Auth signup.
+    op.execute("""
         CREATE OR REPLACE FUNCTION public.handle_new_user() RETURNS trigger AS $$
         BEGIN
           INSERT INTO public.profiles (id, display_name)
@@ -54,8 +56,9 @@ def upgrade() -> None:
           RETURN NEW;
         END;
         $$ LANGUAGE plpgsql SECURITY DEFINER;
-
-        DROP TRIGGER IF EXISTS on_auth_user_created ON auth.users;
+    """)
+    op.execute("DROP TRIGGER IF EXISTS on_auth_user_created ON auth.users;")
+    op.execute("""
         CREATE TRIGGER on_auth_user_created
           AFTER INSERT ON auth.users
           FOR EACH ROW EXECUTE FUNCTION public.handle_new_user();
@@ -120,13 +123,13 @@ def upgrade() -> None:
     op.create_index("items_user_platform_idx", "items", ["user_id", "platform"])
     op.create_index("items_user_state_idx", "items", ["user_id", "state"])
 
-    op.execute("""
-        ALTER TABLE items ENABLE ROW LEVEL SECURITY;
-        CREATE POLICY items_select_own ON items FOR SELECT USING (auth.uid() = user_id);
-        CREATE POLICY items_insert_own ON items FOR INSERT WITH CHECK (auth.uid() = user_id);
-        CREATE POLICY items_update_own ON items FOR UPDATE USING (auth.uid() = user_id);
-        CREATE POLICY items_delete_own ON items FOR DELETE USING (auth.uid() = user_id);
-    """)
+    op.execute("ALTER TABLE items ENABLE ROW LEVEL SECURITY;")
+    op.execute("CREATE POLICY items_select_own ON items FOR SELECT USING (auth.uid() = user_id);")
+    op.execute(
+        "CREATE POLICY items_insert_own ON items FOR INSERT WITH CHECK (auth.uid() = user_id);"
+    )
+    op.execute("CREATE POLICY items_update_own ON items FOR UPDATE USING (auth.uid() = user_id);")
+    op.execute("CREATE POLICY items_delete_own ON items FOR DELETE USING (auth.uid() = user_id);")
 
     # ------------------------------------------------------------------
     # categories + item_categories
@@ -161,8 +164,8 @@ def upgrade() -> None:
         sa.UniqueConstraint("user_id", "name", name="categories_user_name_unique"),
         sa.CheckConstraint("source IN ('auto','user','import')", name="categories_source_valid"),
     )
+    op.execute("ALTER TABLE categories ENABLE ROW LEVEL SECURITY;")
     op.execute("""
-        ALTER TABLE categories ENABLE ROW LEVEL SECURITY;
         CREATE POLICY categories_all_own ON categories FOR ALL
           USING (auth.uid() = user_id)
           WITH CHECK (auth.uid() = user_id);
@@ -189,8 +192,8 @@ def upgrade() -> None:
         ),
     )
     op.create_index("item_categories_category_idx", "item_categories", ["category_id"])
+    op.execute("ALTER TABLE item_categories ENABLE ROW LEVEL SECURITY;")
     op.execute("""
-        ALTER TABLE item_categories ENABLE ROW LEVEL SECURITY;
         CREATE POLICY item_categories_via_item ON item_categories FOR ALL
           USING (EXISTS (SELECT 1 FROM items i WHERE i.id = item_id AND i.user_id = auth.uid()))
           WITH CHECK (EXISTS (SELECT 1 FROM items i WHERE i.id = item_id AND i.user_id = auth.uid()));
@@ -225,8 +228,8 @@ def upgrade() -> None:
         ),
         sa.UniqueConstraint("user_id", "name", name="collections_user_name_unique"),
     )
+    op.execute("ALTER TABLE collections ENABLE ROW LEVEL SECURITY;")
     op.execute("""
-        ALTER TABLE collections ENABLE ROW LEVEL SECURITY;
         CREATE POLICY collections_all_own ON collections FOR ALL
           USING (auth.uid() = user_id)
           WITH CHECK (auth.uid() = user_id);
@@ -250,8 +253,8 @@ def upgrade() -> None:
             nullable=False,
         ),
     )
+    op.execute("ALTER TABLE collection_items ENABLE ROW LEVEL SECURITY;")
     op.execute("""
-        ALTER TABLE collection_items ENABLE ROW LEVEL SECURITY;
         CREATE POLICY collection_items_via_collection ON collection_items FOR ALL
           USING (EXISTS (SELECT 1 FROM collections c WHERE c.id = collection_id AND c.user_id = auth.uid()))
           WITH CHECK (EXISTS (SELECT 1 FROM collections c WHERE c.id = collection_id AND c.user_id = auth.uid()));
@@ -285,8 +288,8 @@ def upgrade() -> None:
         ),
         sa.Column("finished_at", postgresql.TIMESTAMP(timezone=True)),
     )
+    op.execute("ALTER TABLE imports ENABLE ROW LEVEL SECURITY;")
     op.execute("""
-        ALTER TABLE imports ENABLE ROW LEVEL SECURITY;
         CREATE POLICY imports_all_own ON imports FOR ALL
           USING (auth.uid() = user_id)
           WITH CHECK (auth.uid() = user_id);
@@ -309,8 +312,8 @@ def upgrade() -> None:
         sa.Column("artist", sa.String()),
         sa.Column("saved_at", postgresql.TIMESTAMP(timezone=True)),
     )
+    op.execute("ALTER TABLE saved_audio ENABLE ROW LEVEL SECURITY;")
     op.execute("""
-        ALTER TABLE saved_audio ENABLE ROW LEVEL SECURITY;
         CREATE POLICY saved_audio_all_own ON saved_audio FOR ALL
           USING (auth.uid() = user_id)
           WITH CHECK (auth.uid() = user_id);
@@ -336,8 +339,8 @@ def upgrade() -> None:
             nullable=False,
         ),
     )
+    op.execute("ALTER TABLE ingestion_events ENABLE ROW LEVEL SECURITY;")
     op.execute("""
-        ALTER TABLE ingestion_events ENABLE ROW LEVEL SECURITY;
         CREATE POLICY ingestion_events_via_item ON ingestion_events FOR SELECT
           USING (EXISTS (SELECT 1 FROM items i WHERE i.id = item_id AND i.user_id = auth.uid()));
     """)
@@ -362,8 +365,8 @@ def upgrade() -> None:
             nullable=False,
         ),
     )
+    op.execute("ALTER TABLE push_tokens ENABLE ROW LEVEL SECURITY;")
     op.execute("""
-        ALTER TABLE push_tokens ENABLE ROW LEVEL SECURITY;
         CREATE POLICY push_tokens_all_own ON push_tokens FOR ALL
           USING (auth.uid() = user_id)
           WITH CHECK (auth.uid() = user_id);

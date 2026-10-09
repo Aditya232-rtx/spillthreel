@@ -27,7 +27,8 @@ TEST_DATABASE_URL = os.environ.get(
     "TEST_DATABASE_URL",
     "postgresql://spill:spill@localhost:5432/spillthereel",
 )
-TEST_USER_ID = "pgvector-test-user"
+TEST_USER_ID = "11111111-1111-1111-1111-111111111111"
+# Must stay in sync with tests/integration/bootstrap_ci_auth.sql (auth.uid()).
 
 DIM = 768
 
@@ -49,8 +50,13 @@ def _keyword_vector(texts: list[str]) -> list[list[float]]:
     return [vec(t) for t in texts]
 
 
-@pytest_asyncio.fixture(scope="module")
+@pytest_asyncio.fixture()
 async def pg_pool() -> AsyncIterator[asyncpg.Pool]:
+    # Function-scoped (not module): asyncpg pools are bound to the loop
+    # that created them, and each test runs on its own function loop —
+    # sharing one pool across tests breaks on every pytest-asyncio version.
+    # Every test re-seeds items + embeddings, so tests are independent
+    # (no run-order coupling through shared rows).
     import asyncio
 
     try:
@@ -64,9 +70,14 @@ async def pg_pool() -> AsyncIterator[asyncpg.Pool]:
     # Real schema via Alembic (idempotent `upgrade head`), so this tests
     # the actual item_embeddings table, FKs, and HNSW index — not a mock.
     # Fresh process: alembic env.py reads DATABASE_URL at import time.
+    # DATABASE_URL_DIRECT is pinned too: env.py prefers it for migrations,
+    # and a local .env may point it at a remote DB — tests must migrate
+    # the TEST database, matching CI (where no .env exists).
+    test_async_url = TEST_DATABASE_URL.replace("postgresql://", "postgresql+asyncpg://", 1)
     env = {
         **os.environ,
-        "DATABASE_URL": TEST_DATABASE_URL.replace("postgresql://", "postgresql+asyncpg://", 1),
+        "DATABASE_URL": test_async_url,
+        "DATABASE_URL_DIRECT": test_async_url,
     }
     subprocess.run(
         [sys.executable, "-m", "alembic", "upgrade", "head"],
@@ -81,10 +92,15 @@ async def pg_pool() -> AsyncIterator[asyncpg.Pool]:
         assert version, "pgvector extension missing — use the pgvector/pgvector image"
 
     # Idempotent seed: clean slate, then minimal parent rows (FK targets).
+    # Users originate in auth.users (Supabase-faithful): the insert fires
+    # handle_new_user(), which creates the profiles row, satisfying the
+    # profiles.id -> auth.users(id) FK and the items -> profiles FK below.
+    # Embeddings are seeded as deterministic keyword vectors (same shape as
+    # the mocked Gemini output) so every test is self-contained.
     async with pool.acquire() as conn:
-        await conn.execute("DELETE FROM profiles WHERE id = $1", TEST_USER_ID)
+        await conn.execute("DELETE FROM auth.users WHERE id = $1::uuid", TEST_USER_ID)
         await conn.execute(
-            "INSERT INTO profiles (id) VALUES ($1)",
+            "INSERT INTO auth.users (id) VALUES ($1::uuid)",
             TEST_USER_ID,
         )
         await conn.execute(
@@ -92,16 +108,28 @@ async def pg_pool() -> AsyncIterator[asyncpg.Pool]:
             INSERT INTO items
                 (id, user_id, source_url, source_url_norm, platform, state, saved_at, source_type)
             VALUES
-                ('pgv-item-a', $1, 'https://x.test/a', 'https://x.test/a',
+                ('pgv-item-a', $1::uuid, 'https://x.test/a', 'https://x.test/a',
                  'instagram', 'fully_indexed', now(), 'share_extension'),
-                ('pgv-item-b', $1, 'https://x.test/b', 'https://x.test/b',
+                ('pgv-item-b', $1::uuid, 'https://x.test/b', 'https://x.test/b',
                  'tiktok', 'fully_indexed', now(), 'share_extension')
             """,
             TEST_USER_ID,
         )
+        seed_vecs = _keyword_vector(["miso ramen recipe", "resistance band workout"])
+        await conn.execute(
+            """
+            INSERT INTO item_embeddings (item_id, user_id, embedding, created_at)
+            VALUES ('pgv-item-a', $1::uuid, $2::vector, now()),
+                   ('pgv-item-b', $1::uuid, $3::vector, now())
+            """,
+            TEST_USER_ID,
+            "[" + ",".join(map(str, seed_vecs[0])) + "]",
+            "[" + ",".join(map(str, seed_vecs[1])) + "]",
+        )
     yield pool
     async with pool.acquire() as conn:
-        await conn.execute("DELETE FROM profiles WHERE id = $1", TEST_USER_ID)
+        # Cascades profiles -> items -> item_embeddings; auth row included.
+        await conn.execute("DELETE FROM auth.users WHERE id = $1::uuid", TEST_USER_ID)
     await pool.close()
 
 

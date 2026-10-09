@@ -59,6 +59,16 @@ jobs:
         working-directory: apps/api
         run: uv run mypy app/
 
+      - name: Bootstrap CI auth stub (vanilla PG only)
+        # The postgres service is vanilla pgvector/pgvector:pg16 — no Supabase
+        # `auth` schema. 0001_initial references auth.users/auth.uid(), so
+        # apply the CI-only stub before anything runs `alembic upgrade head`.
+        # Never run against Supabase DBs (staging/prod manage auth natively).
+        working-directory: apps/api
+        env:
+          PGPASSWORD: spill
+        run: psql -h localhost -U spill -d spillthereel -f tests/integration/bootstrap_ci_auth.sql
+
       - name: Pytest
         working-directory: apps/api
         env:
