@@ -1,0 +1,39 @@
+# Keep the Cloud Build source upload to a few MB: only Docker build
+# contexts leave the laptop (apps/api/** for the api image, plus the
+# worker Dockerfile's repo-root paths). Everything below is excluded.
+.git
+.gitignore
+**/node_modules/
+apps/mobile/
+design-import/
+assets/
+docs/
+**/.venv/
+**/.venv*/
+**/venv/
+**/__pycache__/
+**/.pytest_cache/
+**/.mypy_cache/
+**/.ruff_cache/
+.env*
+!.env.example
+**/.terraform/
+*.tfstate*
+**/*.tfstate*
+terraform.tfvars
+**/terraform.tfvars
+terraform.tfvars.json
+**/*.png
+**/*.jpg
+**/*.jpeg
+**/*.gif
+**/*.webp
+**/*.svg
+**/*.mp4
+**/*.mov
+**/*.webm
+.DS_Store
+.idea/
+.opencode/
+.claude/
+.agents/

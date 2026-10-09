@@ -1,0 +1,75 @@
+# Staging image build — server-side only (no laptop `docker push`).
+# Builds api + worker in parallel from uv.lock-frozen Dockerfiles and
+# pushes :<_TAG> + :latest to Artifact Registry.
+#
+# Usage:
+#   gcloud builds submit --config cloudbuild.staging.yaml \
+#     --region asia-south1 --substitutions _TAG=$(date +%Y%m%d-%H%M%S) .
+#
+# Layout (verified 2026-10-09):
+#   api    — Dockerfile apps/api/Dockerfile,    context apps/api
+#   worker — Dockerfile apps/workers/Dockerfile, context repo root (.)
+
+substitutions:
+  # Artifact Registry repo ($R in runbooks).
+  _REGISTRY: asia-south1-docker.pkg.dev/spillthereel/spillthereel
+  # Unique image tag; defaults to the Cloud Build ID when not overridden.
+  _TAG: $BUILD_ID
+
+steps:
+  # Warm the layer cache; first-ever run has no :latest — tolerate that.
+  - name: gcr.io/cloud-builders/docker
+    entrypoint: sh
+    args: ['-c', 'docker pull $_REGISTRY/api:latest || true']
+    waitFor: ['-']
+  - name: gcr.io/cloud-builders/docker
+    entrypoint: sh
+    args: ['-c', 'docker pull $_REGISTRY/worker:latest || true']
+    waitFor: ['-']
+
+  # api and worker build in parallel (waitFor ['-'] = no ordering).
+  - name: gcr.io/cloud-builders/docker
+    env: ['DOCKER_BUILDKIT=1']
+    args:
+      - build
+      - -t
+      - $_REGISTRY/api:$_TAG
+      - -t
+      - $_REGISTRY/api:latest
+      - --cache-from
+      - $_REGISTRY/api:latest
+      - --build-arg
+      - BUILDKIT_INLINE_CACHE=1
+      - -f
+      - apps/api/Dockerfile
+      - apps/api
+    waitFor: ['-']
+  - name: gcr.io/cloud-builders/docker
+    env: ['DOCKER_BUILDKIT=1']
+    args:
+      - build
+      - -t
+      - $_REGISTRY/worker:$_TAG
+      - -t
+      - $_REGISTRY/worker:latest
+      - --cache-from
+      - $_REGISTRY/worker:latest
+      - --build-arg
+      - BUILDKIT_INLINE_CACHE=1
+      - -f
+      - apps/workers/Dockerfile
+      - .
+    waitFor: ['-']
+
+# Cloud Build pushes these after the steps succeed.
+images:
+  - $_REGISTRY/api:$_TAG
+  - $_REGISTRY/api:latest
+  - $_REGISTRY/worker:$_TAG
+  - $_REGISTRY/worker:latest
+
+options:
+  machineType: E2_HIGHCPU_8
+  logging: CLOUD_LOGGING_ONLY
+
+timeout: 1500s
