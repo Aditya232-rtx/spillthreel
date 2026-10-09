@@ -22,6 +22,7 @@ from app.services.extractors.base import (
     Platform,
 )
 from app.services.extractors.cobalt import CobaltExtractor
+from app.services.extractors.gallerydl import GalleryDlExtractor
 from app.services.extractors.ytdlp import YtDlpExtractor
 from app.services.ingest.platform_detect import detect_platform
 
@@ -29,12 +30,22 @@ _logger = get_logger(__name__)
 
 
 def _build_registry() -> dict[Platform, list[Extractor]]:
-    """Priority order per platform. First entry is tried first."""
+    """Priority order per platform. First entry is tried first.
+
+    gallery-dl sits LAST on the image-post platforms (instagram, x —
+    TRD §12.3 IG carousels / X threads). Video stays with Cobalt/yt-dlp
+    by chain order: a video URL that either can handle never reaches
+    gallery-dl. TikTok/YouTube are video-only in v1, so no image fallback.
+    """
     return {
-        "instagram": [CobaltExtractor("instagram"), YtDlpExtractor("instagram")],
+        "instagram": [
+            CobaltExtractor("instagram"),
+            YtDlpExtractor("instagram"),
+            GalleryDlExtractor("instagram"),
+        ],
         "tiktok": [CobaltExtractor("tiktok"), YtDlpExtractor("tiktok")],
         "youtube": [CobaltExtractor("youtube"), YtDlpExtractor("youtube")],
-        "x": [CobaltExtractor("x"), YtDlpExtractor("x")],
+        "x": [CobaltExtractor("x"), YtDlpExtractor("x"), GalleryDlExtractor("x")],
     }
 
 
