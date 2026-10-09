@@ -25,14 +25,33 @@ EMBEDDING_DIM = 768
 def upgrade() -> None:
     op.execute("CREATE EXTENSION IF NOT EXISTS vector;")
     op.execute(
-        f"""
+        """
         CREATE TABLE item_embeddings (
             item_id TEXT PRIMARY KEY REFERENCES items(id) ON DELETE CASCADE,
-            user_id TEXT NOT NULL REFERENCES profiles(id) ON DELETE CASCADE,
-            embedding vector({EMBEDDING_DIM}) NOT NULL,
+            user_id UUID NOT NULL REFERENCES profiles(id) ON DELETE CASCADE,
+            embedding vector(768) NOT NULL,
             created_at TIMESTAMPTZ NOT NULL DEFAULT now()
         );
         """
+    )
+    op.execute("ALTER TABLE item_embeddings ENABLE ROW LEVEL SECURITY;")
+    # NOTE: one statement per op.execute — asyncpg (the online migration
+    # driver) rejects multi-command prepared statements.
+    op.execute(
+        "CREATE POLICY item_embeddings_select_own ON item_embeddings "
+        "FOR SELECT USING (auth.uid() = user_id);"
+    )
+    op.execute(
+        "CREATE POLICY item_embeddings_insert_own ON item_embeddings "
+        "FOR INSERT WITH CHECK (auth.uid() = user_id);"
+    )
+    op.execute(
+        "CREATE POLICY item_embeddings_update_own ON item_embeddings "
+        "FOR UPDATE USING (auth.uid() = user_id);"
+    )
+    op.execute(
+        "CREATE POLICY item_embeddings_delete_own ON item_embeddings "
+        "FOR DELETE USING (auth.uid() = user_id);"
     )
     op.execute("CREATE INDEX ix_item_embeddings_user_id ON item_embeddings (user_id);")
     # HNSW (not IVFFlat): the modern pgvector default, robust at small row
