@@ -15,6 +15,7 @@ from __future__ import annotations
 import asyncio
 import tempfile
 import time
+from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -52,8 +53,13 @@ def _fetch_id_token_sync(audience: str) -> str:
     from google.auth.transport.requests import Request
     from google.oauth2 import id_token as google_id_token
 
-    # google-auth ships no stubs; with ignore_missing_imports the module is Any.
-    return str(google_id_token.fetch_id_token(Request(), audience))
+    # google-auth ships no stubs, so its defs are untyped: bind the
+    # fetcher to a typed alias and call THAT, keeping strict's
+    # no-untyped-call quiet in the full (worker-extras) env. In the lean
+    # dev env the module is Any (ignore_missing_imports) and this is a no-op.
+    fetch_id_token: Callable[[Request, str], str] = google_id_token.fetch_id_token
+    token: str = fetch_id_token(Request(), audience)
+    return token
 
 
 async def _get_gcp_id_token(audience: str) -> str:

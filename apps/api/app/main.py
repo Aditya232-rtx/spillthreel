@@ -3,7 +3,7 @@
 Assembles:
   * Structured logging + Sentry
   * Firebase Admin (via first token verify — lazy-init)
-  * v1 routers (saves, items, categories, users)
+  * v1 routers (saves, items, categories, users, search, events, notifications)
   * Health probe
 
 Run locally:
@@ -24,7 +24,7 @@ from sentry_sdk.types import Event
 from slowapi.errors import RateLimitExceeded
 
 from app.api import health
-from app.api.v1 import categories, items, saves, users
+from app.api.v1 import categories, events, items, notifications, saves, search, users
 from app.observability.logging import configure_logging, get_logger
 from app.ratelimit import (
     DefaultRateLimitMiddleware,
@@ -124,6 +124,9 @@ def create_app() -> FastAPI:
     app.include_router(items.router, prefix="/v1", tags=["items"])
     app.include_router(categories.router, prefix="/v1", tags=["categories"])
     app.include_router(users.router, prefix="/v1", tags=["users"])
+    app.include_router(search.router, prefix="/v1", tags=["search"])
+    app.include_router(events.router, prefix="/v1", tags=["events"])
+    app.include_router(notifications.router, prefix="/v1", tags=["notifications"])
 
     # In dev, the worker routes share the api process so a single
     # docker-compose service exercises the full pipeline. In prod they
