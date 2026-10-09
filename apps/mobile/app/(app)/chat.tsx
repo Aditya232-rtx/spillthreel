@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import {
   Image,
+  Linking,
   Platform,
   Pressable,
   ScrollView,
@@ -18,7 +19,8 @@ import Animated, {
   ZoomIn,
 } from 'react-native-reanimated';
 import { Svg, Line, Path, Polyline, Rect } from 'react-native-svg';
-import { SUGGESTION_CHIPS, type ChatMessage } from '@/data/chat';
+import { SUGGESTION_CHIPS, type ChatErrorKind, type ChatMessage } from '@/data/chat';
+import { ApiError, search, type SearchCard } from '@/lib/api';
 import { alpha, color, font, radius, space } from '@/theme/tokens';
 
 interface Conversation {
@@ -28,8 +30,17 @@ interface Conversation {
   messages: ChatMessage[];
 }
 
-const HISTORY_KEY = 'spillthereel.chat_history.v1';
+const HISTORY_KEY = 'spillthereel.chat_history.v2';
+const LEGACY_HISTORY_KEY = 'spillthereel.chat_history.v1';
 const MAX_STORED_MESSAGES = 50;
+/** Backend contract: query is 1..500 chars — clamp client-side, never 400. */
+const MAX_QUERY_LENGTH = 500;
+/** Citation flash duration (ms) when tapping an inline [n] marker. */
+const FLASH_MS = 1400;
+/** Suggestion-chip double-tap guard (ms). */
+const CHIP_DEBOUNCE_MS = 300;
+/** Local fallback when a card has no thumbnail or remote load fails. */
+const CARD_PLACEHOLDER = require('../../assets/images/chat-ui-libraries.png');
 
 let nextId = 1;
 function newId(prefix: string): string {
@@ -45,6 +56,170 @@ function conversationTitle(firstQuery: string): string {
   return trimmed.length > 34 ? `${trimmed.slice(0, 34)}…` : trimmed;
 }
 
+/**
+ * v1 → v2 history migration. v1 messages carry no cards[]/citations[] and may
+ * carry the legacy require()-image `card` — drop card fields, keep text.
+ * Unknown shapes degrade to an empty-text bubble rather than crashing load.
+ */
+function migrateMessage(raw: unknown): ChatMessage {
+  const m = (typeof raw === 'object' && raw !== null ? raw : {}) as Partial<ChatMessage>;
+  return {
+    id: typeof m.id === 'string' ? m.id : newId('msg'),
+    isUser: m.isUser === true,
+    text: typeof m.text === 'string' ? m.text : '',
+  };
+}
+
+function migrateConversations(raw: unknown): Conversation[] | null {
+  if (!Array.isArray(raw)) return null;
+  const convs = (raw as Partial<Conversation>[])
+    .filter((c) => c && typeof c.id === 'string' && Array.isArray(c.messages))
+    .map((c) => ({
+      id: c.id as string,
+      title: typeof c.title === 'string' ? c.title : 'New chat',
+      updatedAt: typeof c.updatedAt === 'number' ? c.updatedAt : Date.now(),
+      messages: (c.messages as unknown[]).map(migrateMessage),
+    }));
+  return convs.length > 0 ? convs : null;
+}
+
+function errorKind(err: unknown): ChatErrorKind {
+  if (err instanceof ApiError) {
+    if (err.status === 401) return 'auth';
+    if (err.status === 503 || err.status === 504) return 'retryable';
+  }
+  return 'generic';
+}
+
+function errorText(err: unknown): string {
+  switch (errorKind(err)) {
+    case 'auth':
+      // api.ts already signed out locally; AuthGate routes to welcome.
+      return 'Your session expired — please sign in again to keep searching.';
+    case 'retryable':
+      return 'Search is busy right now — try again in a moment.';
+    default:
+      return 'Something went wrong with search — try again.';
+  }
+}
+
+/**
+ * Open a backend deep_link. `app://item/{id}` routes in-app; anything else
+ * goes to the OS. Parsed defensively — unrecognized input is ignored.
+ */
+function useDeepLinkOpener(): (deepLink: string | undefined) => void {
+  const router = useRouter();
+  return (deepLink: string | undefined) => {
+    if (!deepLink) return;
+    const target = deepLink.trim();
+    const appMatch = /^app:\/\/item\/([^\s/?#]+)/.exec(target);
+    if (appMatch) {
+      const id = decodeURIComponent(appMatch[1]);
+      // /(app)/item/[id] lands with the item-detail screen (parallel work);
+      // cast because typedRoutes only knows routes that exist today.
+      router.push(`/(app)/item/${id}` as never);
+      return;
+    }
+    Linking.openURL(target).catch(() => {
+      // Unsupported scheme or no handler — stay on chat, no crash.
+    });
+  };
+}
+
+/** Assistant text with tappable [n] citation markers (nested Text onPress). */
+function AssistantText({
+  text,
+  onCite,
+}: {
+  text: string;
+  onCite: (n: number) => void;
+}) {
+  const parts = text.split(/(\[\d+\])/g);
+  return (
+    <Text style={{ fontFamily: font.body, fontSize: 14.5, lineHeight: 21, color: color.cream }}>
+      {parts.map((part, i) => {
+        const marker = /^\[(\d+)\]$/.exec(part);
+        if (!marker) {
+          return <Text key={i}>{part}</Text>;
+        }
+        return (
+          <Text
+            key={i}
+            onPress={() => onCite(Number(marker[1]))}
+            style={{ textDecorationLine: 'underline', color: color.coral }}
+          >
+            {part}
+          </Text>
+        );
+      })}
+    </Text>
+  );
+}
+
+/** One backend hit card — same look as the legacy card, remote thumbnail. */
+function ResultCard({
+  card,
+  flashed,
+  onOpen,
+}: {
+  card: SearchCard;
+  flashed: boolean;
+  onOpen: () => void;
+}) {
+  const [imgFailed, setImgFailed] = useState(false);
+  const platform = card.platform ? card.platform.toUpperCase() : 'APP';
+  return (
+    <View
+      style={{
+        backgroundColor: color.chatCard,
+        borderWidth: flashed ? 2.5 : 1.5,
+        borderColor: flashed ? color.coral : alpha(color.cream, 0.15),
+        borderRadius: 20,
+        overflow: 'hidden',
+        width: 210,
+      }}
+    >
+      {card.thumbnail_url && !imgFailed ? (
+        <Image
+          source={{ uri: card.thumbnail_url }}
+          onError={() => setImgFailed(true)}
+          style={{ height: 220, width: '100%' }}
+          resizeMode="cover"
+        />
+      ) : (
+        <Image source={CARD_PLACEHOLDER} style={{ height: 220, width: '100%' }} resizeMode="cover" />
+      )}
+      <View style={{ padding: space.md, gap: space.sm }}>
+        <Text style={{ fontFamily: font.display, fontSize: 13, color: color.cream }} numberOfLines={2}>
+          {card.title}
+        </Text>
+        {card.creator ? (
+          <Text style={{ fontFamily: font.body, fontSize: 11.5, lineHeight: 16, color: alpha(color.cream, 0.55) }} numberOfLines={2}>
+            {card.creator}
+          </Text>
+        ) : null}
+        <Pressable
+          onPress={onOpen}
+          accessibilityRole="button"
+          accessibilityLabel={`Open ${card.title}`}
+          style={{
+            flexDirection: 'row',
+            alignItems: 'center',
+            justifyContent: 'center',
+            gap: 6,
+            backgroundColor: color.cream,
+            borderRadius: radius.pill,
+            paddingVertical: 9,
+            marginTop: 4,
+          }}
+        >
+          <Text style={{ fontFamily: font.display, fontSize: 11.5, color: color.ink }}>↗ WATCH ON {platform}</Text>
+        </Pressable>
+      </View>
+    </View>
+  );
+}
+
 export default function ChatScreen() {
   const router = useRouter();
   const [conversations, setConversations] = useState<Conversation[]>([freshConversation()]);
@@ -57,7 +232,11 @@ export default function ChatScreen() {
   const [voiceHint, setVoiceHint] = useState(false);
 
   const scrollRef = useRef<ScrollView>(null);
-  const botTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const searchAbortRef = useRef<AbortController | null>(null);
+  const chipGuardRef = useRef(0);
+  const flashTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [flashCardId, setFlashCardId] = useState<string | null>(null);
+  const openDeepLink = useDeepLinkOpener();
   const listenTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const recognitionRef = useRef<any>(null);
   const transcriptRef = useRef('');
@@ -68,21 +247,34 @@ export default function ChatScreen() {
   const hasText = input.trim().length > 0;
 
   // Load persisted history once; ensure one active conversation.
+  // v2 key wins; absent v2, migrate v1 (drop card fields, keep text).
   useEffect(() => {
     AsyncStorage.getItem(HISTORY_KEY)
       .then((raw) => {
-        if (!raw) return;
-        const parsed = JSON.parse(raw) as Conversation[];
-        if (Array.isArray(parsed) && parsed.length > 0) {
-          setConversations(parsed);
-          setActiveId(parsed[0].id);
+        if (raw) {
+          const convs = migrateConversations(JSON.parse(raw));
+          if (convs) {
+            setConversations(convs);
+            setActiveId(convs[0].id);
+            return;
+          }
         }
+        return AsyncStorage.getItem(LEGACY_HISTORY_KEY).then((legacyRaw) => {
+          if (!legacyRaw) return;
+          const convs = migrateConversations(JSON.parse(legacyRaw));
+          if (convs) {
+            setConversations(convs);
+            setActiveId(convs[0].id);
+          }
+        });
       })
       .catch(() => {
         // corrupted history — start fresh
       });
     return () => {
-      if (botTimerRef.current) clearTimeout(botTimerRef.current);
+      searchAbortRef.current?.abort();
+      searchAbortRef.current = null;
+      if (flashTimerRef.current) clearTimeout(flashTimerRef.current);
       if (listenTimerRef.current) clearInterval(listenTimerRef.current);
       if (hintTimerRef.current) clearTimeout(hintTimerRef.current);
       if (recognitionRef.current) {
@@ -121,35 +313,75 @@ export default function ChatScreen() {
     );
   }
 
-  function sendMessage(raw?: string): void {
+  async function sendMessage(raw?: string): Promise<void> {
     const trimmed = (raw ?? input).trim();
     if (!trimmed || thinkingFor || !active) return;
     const convId = active.id;
     const isFirst = active.messages.length === 0;
+    const query = trimmed.slice(0, MAX_QUERY_LENGTH);
     appendMessage(
       convId,
-      { id: newId('msg'), isUser: true, text: trimmed },
-      isFirst ? conversationTitle(trimmed) : undefined,
+      { id: newId('msg'), isUser: true, text: query },
+      isFirst ? conversationTitle(query) : undefined,
     );
     setInput('');
     setThinkingFor(convId);
     requestAnimationFrame(() => scrollRef.current?.scrollToEnd({ animated: true }));
-    if (botTimerRef.current) clearTimeout(botTimerRef.current);
-    botTimerRef.current = setTimeout(() => {
-      // Stub answer until the search/RAG backend lands — honest about it
-      // so nobody mistakes canned content for real recall.
+    // Cancel any previous in-flight search before starting a new one.
+    searchAbortRef.current?.abort();
+    const controller = new AbortController();
+    searchAbortRef.current = controller;
+    try {
+      const res = await search(query, undefined, { signal: controller.signal });
+      if (controller.signal.aborted) return;
+      // Backend text verbatim when provided; honest fallback when empty —
+      // the suggestion chips below cover the no-match recovery path.
+      const text =
+        res.text && res.text.trim().length > 0
+          ? res.text
+          : 'No matches in your saves — try different words, or tap a suggestion below.';
       appendMessage(convId, {
         id: newId('msg'),
         isUser: false,
-        text: `On it — full recall answers plug in once the search backend lands. You asked: “${trimmed}”`,
+        text,
+        cards: res.cards ?? [],
+        citations: res.citations ?? [],
       });
+    } catch (err) {
+      // Client-side cancel from new chat / conversation switch — no bubble.
+      if (controller.signal.aborted) return;
+      appendMessage(convId, {
+        id: newId('msg'),
+        isUser: false,
+        text: errorText(err),
+        error: errorKind(err),
+        retryQuery: query,
+      });
+    } finally {
+      if (searchAbortRef.current === controller) searchAbortRef.current = null;
       setThinkingFor((current) => (current === convId ? null : current));
-    }, 1000);
+    }
+  }
+
+  /** Abort in-flight search; called on new chat / conversation switch. */
+  function cancelInFlight(): void {
+    searchAbortRef.current?.abort();
+    searchAbortRef.current = null;
+    setThinkingFor(null);
+  }
+
+  /** Tapping an inline [n] flashes the referenced card (no new deps). */
+  function flashCitation(msg: ChatMessage, n: number): void {
+    const itemId = msg.citations?.find((c) => c.index === n)?.item_id;
+    if (!itemId || !msg.cards?.some((c) => c.item_id === itemId)) return;
+    setFlashCardId(itemId);
+    if (flashTimerRef.current) clearTimeout(flashTimerRef.current);
+    flashTimerRef.current = setTimeout(() => setFlashCardId(null), FLASH_MS);
+    requestAnimationFrame(() => scrollRef.current?.scrollToEnd({ animated: true }));
   }
 
   function startNewChat(): void {
-    if (botTimerRef.current) clearTimeout(botTimerRef.current);
-    setThinkingFor(null);
+    cancelInFlight();
     const conv = freshConversation();
     setConversations((prev) => [conv, ...prev]);
     setActiveId(conv.id);
@@ -158,9 +390,18 @@ export default function ChatScreen() {
   }
 
   function openConversation(id: string): void {
+    cancelInFlight();
     setActiveId(id);
     setInput('');
     setDrawerOpen(false);
+  }
+
+  /** Suggestion chips with a 300ms double-tap guard. */
+  function sendSuggestion(chip: string): void {
+    const now = Date.now();
+    if (now - chipGuardRef.current < CHIP_DEBOUNCE_MS) return;
+    chipGuardRef.current = now;
+    void sendMessage(chip.replace(/^[^\s]+\s/, ''));
   }
 
   function deleteConversation(id: string): void {
@@ -330,29 +571,36 @@ export default function ChatScreen() {
                 <Text style={{ fontSize: 9, color: color.cream }}>▶</Text>
               </View>
               <View style={{ gap: space.md, flexShrink: 1 }}>
-                <Text style={{ fontFamily: font.body, fontSize: 14.5, lineHeight: 21, color: color.cream }}>{msg.text}</Text>
-                {msg.card ? (
-                  <View style={{ backgroundColor: color.chatCard, borderWidth: 1.5, borderColor: alpha(color.cream, 0.15), borderRadius: 20, overflow: 'hidden', width: 210 }}>
-                    <Image source={msg.card.image} style={{ height: 220, width: '100%' }} resizeMode="cover" />
-                    <View style={{ padding: space.md, gap: space.sm }}>
-                      <Text style={{ fontFamily: font.display, fontSize: 13, color: color.cream }}>{msg.card.creator}</Text>
-                      <Text style={{ fontFamily: font.body, fontSize: 11.5, lineHeight: 16, color: alpha(color.cream, 0.55) }}>{msg.card.desc}</Text>
-                      <View
-                        style={{
-                          flexDirection: 'row',
-                          alignItems: 'center',
-                          justifyContent: 'center',
-                          gap: 6,
-                          backgroundColor: color.cream,
-                          borderRadius: radius.pill,
-                          paddingVertical: 9,
-                          marginTop: 4,
-                        }}
-                      >
-                        <Text style={{ fontFamily: font.display, fontSize: 11.5, color: color.ink }}>↗ WATCH ON INSTAGRAM</Text>
-                      </View>
-                    </View>
+                <AssistantText text={msg.text} onCite={(n) => flashCitation(msg, n)} />
+                {msg.cards && msg.cards.length > 0 ? (
+                  <View style={{ gap: space.sm }}>
+                    {msg.cards.map((card) => (
+                      <ResultCard
+                        key={card.item_id}
+                        card={card}
+                        flashed={flashCardId === card.item_id}
+                        onOpen={() => openDeepLink(card.deep_link)}
+                      />
+                    ))}
                   </View>
+                ) : null}
+                {msg.error ? (
+                  <Pressable
+                    onPress={() => void sendMessage(msg.retryQuery ?? '')}
+                    accessibilityRole="button"
+                    accessibilityLabel="Retry search"
+                    style={{
+                      alignSelf: 'flex-start',
+                      backgroundColor: alpha(color.cream, 0.12),
+                      borderWidth: 1,
+                      borderColor: alpha(color.cream, 0.25),
+                      borderRadius: radius.pill,
+                      paddingHorizontal: space.md + 2,
+                      paddingVertical: space.sm,
+                    }}
+                  >
+                    <Text style={{ fontFamily: font.display, fontSize: 11, color: color.cream }}>↻ RETRY</Text>
+                  </Pressable>
                 ) : null}
               </View>
             </View>
@@ -381,7 +629,7 @@ export default function ChatScreen() {
           {SUGGESTION_CHIPS.map((chip) => (
             <Pressable
               key={chip}
-              onPress={() => sendMessage(chip.replace(/^[^\s]+\s/, ''))}
+              onPress={() => sendSuggestion(chip)}
               style={{
                 backgroundColor: alpha(color.cream, 0.1),
                 borderWidth: 1,
@@ -457,7 +705,7 @@ export default function ChatScreen() {
             <TextInput
               value={input}
               onChangeText={setInput}
-              onSubmitEditing={() => sendMessage()}
+              onSubmitEditing={() => void sendMessage()}
               placeholder="Ask something to start"
               placeholderTextColor={alpha(color.cream, 0.55)}
               style={{ flex: 1, fontFamily: font.body, fontSize: 14, color: color.cream, paddingVertical: 0, textAlignVertical: 'center' }}
@@ -466,7 +714,7 @@ export default function ChatScreen() {
           {hasText && !listening ? (
             <Animated.View key="send" entering={ZoomIn.duration(160)}>
               <Pressable
-                onPress={() => sendMessage()}
+                onPress={() => void sendMessage()}
                 accessibilityLabel="Send message"
                 hitSlop={6}
                 style={{ width: 32, height: 32, borderRadius: radius.pill, backgroundColor: color.coral, alignItems: 'center', justifyContent: 'center' }}

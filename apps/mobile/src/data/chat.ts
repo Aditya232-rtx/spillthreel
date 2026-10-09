@@ -1,14 +1,31 @@
+import type { SearchCard, SearchCitation } from '@/lib/api';
+
 export interface ChatCard {
   image: number;
   creator: string;
   desc: string;
 }
 
+/** Failure mode of an assistant turn — drives error copy + Retry visibility. */
+export type ChatErrorKind = 'auth' | 'retryable' | 'generic';
+
 export interface ChatMessage {
   id: string;
   isUser: boolean;
   text: string;
+  /**
+   * Legacy v1 single card (require() image). Never written anymore — v1
+   * history is migrated by dropping this field and keeping text.
+   */
   card?: ChatCard;
+  /** Backend /v1/search hits, newest format. */
+  cards?: SearchCard[];
+  /** Backend /v1/search citations; [n] markers render inline in text. */
+  citations?: SearchCitation[];
+  /** Set on failed assistant turns to render the Retry button. */
+  error?: ChatErrorKind;
+  /** Original query, so Retry can re-fire without retyping. */
+  retryQuery?: string;
 }
 
 export const INITIAL_MESSAGES: ChatMessage[] = [

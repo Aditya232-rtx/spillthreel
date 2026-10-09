@@ -39,10 +39,12 @@ interface RequestOptions {
   body?: Record<string, unknown> | null;
   /** Include auth header? Default true. Set false for public routes. */
   auth?: boolean;
+  /** AbortSignal for cancellable requests (chat search cancel-on-switch). */
+  signal?: AbortSignal;
 }
 
 async function apiRequest<T>(path: string, options: RequestOptions = {}): Promise<T> {
-  const { method = 'GET', body = null, auth = true } = options;
+  const { method = 'GET', body = null, auth = true, signal } = options;
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
     Accept: 'application/json',
@@ -63,6 +65,9 @@ async function apiRequest<T>(path: string, options: RequestOptions = {}): Promis
     method,
     headers,
     body: body ? JSON.stringify(body) : undefined,
+    // AbortError (a DOMException, NOT an ApiError) propagates to the caller,
+    // which must ignore it when it aborted the request itself.
+    ...(signal ? { signal } : null),
   });
 
   const isJson = response.headers.get('content-type')?.includes('application/json');
@@ -104,3 +109,71 @@ export const api = {
   delete: <T,>(path: string, opts?: Omit<RequestOptions, 'method' | 'body'>) =>
     apiRequest<T>(path, { ...opts, method: 'DELETE' }),
 };
+
+/**
+ * POST /v1/search — chat recall.
+ *
+ * Contract (backend guarantees): request {query 1..500, filters?, top_k?},
+ * response {text, cards[], citations[], meta{}}. Errors 400/401/422/503/504
+ * surface as ApiError with the backend's JSON detail as message; a client-side
+ * abort surfaces as DOMException AbortError (not ApiError — ignore it when
+ * the caller cancelled).
+ */
+export interface SearchFilters {
+  platforms?: string[];
+  categories?: string[];
+  collection_ids?: string[];
+  only_fully_indexed?: boolean;
+  since?: string;
+}
+
+export interface SearchCard {
+  item_id: string;
+  title: string;
+  creator?: string;
+  platform: string;
+  thumbnail_url?: string;
+  deep_link: string;
+  score: number;
+}
+
+export interface SearchCitation {
+  item_id: string;
+  index: number;
+  span?: string;
+}
+
+export interface SearchMeta {
+  latency_ms: number;
+  hits: number;
+  model: string;
+  fallback?: boolean;
+}
+
+export interface SearchResponse {
+  text: string;
+  cards: SearchCard[];
+  citations: SearchCitation[];
+  meta: SearchMeta;
+}
+
+export interface SearchOptions {
+  top_k?: number;
+  signal?: AbortSignal;
+}
+
+export function search(
+  query: string,
+  filters?: SearchFilters,
+  opts?: SearchOptions,
+): Promise<SearchResponse> {
+  return api.post<SearchResponse>(
+    '/v1/search',
+    {
+      query,
+      ...(filters ? { filters } : null),
+      ...(typeof opts?.top_k === 'number' ? { top_k: opts.top_k } : null),
+    },
+    opts?.signal ? { signal: opts.signal } : undefined,
+  );
+}
