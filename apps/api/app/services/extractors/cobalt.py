@@ -52,8 +52,8 @@ def _fetch_id_token_sync(audience: str) -> str:
     from google.auth.transport.requests import Request
     from google.oauth2 import id_token as google_id_token
 
-    # google-auth ships no stubs; the ignore is scoped to this one call.
-    return str(google_id_token.fetch_id_token(Request(), audience))  # type: ignore[no-untyped-call]
+    # google-auth ships no stubs; with ignore_missing_imports the module is Any.
+    return str(google_id_token.fetch_id_token(Request(), audience))
 
 
 async def _get_gcp_id_token(audience: str) -> str:
@@ -87,7 +87,10 @@ async def _auth_headers(settings: Settings) -> dict[str, str]:
     if not settings.cobalt_base_url:
         raise ExtractorError("cobalt_base_url not configured")
     headers = {"Accept": "application/json", "Content-Type": "application/json"}
-    if settings.cobalt_api_key:
+    if not settings.cobalt_api_key:
+        if settings.environment != "dev":
+            raise ExtractorError("cobalt_api_key not configured")
+    else:
         headers["Authorization"] = f"Api-Key {settings.cobalt_api_key}"
     if settings.environment != "dev":
         id_token = await _get_gcp_id_token(settings.cobalt_base_url.rstrip("/"))

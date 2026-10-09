@@ -69,7 +69,7 @@ def verify_access_token(token: str) -> dict[str, Any]:
     key: str | Any
     algorithms: list[str]
 
-    if alg in ("ES256", "RS256", "EdDSA"):
+    if alg in ("ES256", "RS256"):
         try:
             signing_key = _get_jwks_client().get_signing_key_from_jwt(token)
         except Exception as e:

@@ -85,6 +85,13 @@ class Settings(BaseSettings):
     cloud_tasks_queue_ingest: str = "ingest"
     cloud_tasks_queue_import: str = "import"
     cloud_tasks_queue_enhance: str = "enhance"
+    cloud_tasks_oidc_sa_email: str | None = Field(
+        default=None,
+        description=(
+            "SA email that mints Cloud Tasks OIDC tokens — the api Cloud "
+            "Run runtime SA. Required outside dev when WORKER_BASE_URL is set."
+        ),
+    )
     worker_base_url: str | None = Field(
         default=None,
         description="Cloud Run worker service URL — Cloud Tasks POSTs here",
