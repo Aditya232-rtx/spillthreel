@@ -23,7 +23,7 @@ from sqlalchemy import (
     UniqueConstraint,
     text,
 )
-from sqlalchemy.dialects.postgresql import TIMESTAMP
+from sqlalchemy.dialects.postgresql import TIMESTAMP, UUID
 from sqlalchemy.orm import (
     DeclarativeBase,
     Mapped,
@@ -54,7 +54,7 @@ class Base(DeclarativeBase, MappedAsDataclass):
 class Profile(Base):
     __tablename__ = "profiles"
 
-    id: Mapped[str] = mapped_column(String, primary_key=True)  # UUID == auth.users.id
+    id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True)  # UUID == auth.users.id
     display_name: Mapped[str | None] = mapped_column(String, default=None)
     avatar_url: Mapped[str | None] = mapped_column(String, default=None)
     created_at: Mapped[datetime] = mapped_column(
@@ -101,7 +101,7 @@ class Item(Base):
 
     id: Mapped[str] = mapped_column(String, primary_key=True)
     user_id: Mapped[str] = mapped_column(
-        String, ForeignKey("profiles.id", ondelete="CASCADE"), nullable=False
+        UUID(as_uuid=False), ForeignKey("profiles.id", ondelete="CASCADE"), nullable=False
     )
     source_url: Mapped[str] = mapped_column(Text, nullable=False)
     source_url_norm: Mapped[str] = mapped_column(Text, nullable=False)
@@ -150,7 +150,7 @@ class Category(Base):
 
     id: Mapped[str] = mapped_column(String, primary_key=True)
     user_id: Mapped[str] = mapped_column(
-        String, ForeignKey("profiles.id", ondelete="CASCADE"), nullable=False
+        UUID(as_uuid=False), ForeignKey("profiles.id", ondelete="CASCADE"), nullable=False
     )
     name: Mapped[str] = mapped_column(String, nullable=False)
     source: Mapped[str] = mapped_column(String, nullable=False)
@@ -186,7 +186,7 @@ class ItemEmbedding(Base):
         String, ForeignKey("items.id", ondelete="CASCADE"), primary_key=True
     )
     user_id: Mapped[str] = mapped_column(
-        String, ForeignKey("profiles.id", ondelete="CASCADE"), nullable=False
+        UUID(as_uuid=False), ForeignKey("profiles.id", ondelete="CASCADE"), nullable=False
     )
     embedding: Mapped[list[float]] = mapped_column(Vector(768), nullable=False)
     created_at: Mapped[datetime] = mapped_column(
@@ -222,7 +222,7 @@ class Collection(Base):
 
     id: Mapped[str] = mapped_column(String, primary_key=True)
     user_id: Mapped[str] = mapped_column(
-        String, ForeignKey("profiles.id", ondelete="CASCADE"), nullable=False
+        UUID(as_uuid=False), ForeignKey("profiles.id", ondelete="CASCADE"), nullable=False
     )
     name: Mapped[str] = mapped_column(String, nullable=False)
     privacy: Mapped[str] = mapped_column(String, nullable=False)
@@ -259,7 +259,7 @@ class Import(Base):
 
     id: Mapped[str] = mapped_column(String, primary_key=True)
     user_id: Mapped[str] = mapped_column(
-        String, ForeignKey("profiles.id", ondelete="CASCADE"), nullable=False
+        UUID(as_uuid=False), ForeignKey("profiles.id", ondelete="CASCADE"), nullable=False
     )
     state: Mapped[str] = mapped_column(
         String, nullable=False
@@ -285,7 +285,7 @@ class SavedAudio(Base):
 
     id: Mapped[str] = mapped_column(String, primary_key=True)
     user_id: Mapped[str] = mapped_column(
-        String, ForeignKey("profiles.id", ondelete="CASCADE"), nullable=False
+        UUID(as_uuid=False), ForeignKey("profiles.id", ondelete="CASCADE"), nullable=False
     )
     source_type: Mapped[str] = mapped_column(String, nullable=False)
     title: Mapped[str | None] = mapped_column(String, default=None)
@@ -312,7 +312,7 @@ class PushToken(Base):
     __tablename__ = "push_tokens"
 
     user_id: Mapped[str] = mapped_column(
-        String, ForeignKey("profiles.id", ondelete="CASCADE"), primary_key=True
+        UUID(as_uuid=False), ForeignKey("profiles.id", ondelete="CASCADE"), primary_key=True
     )
     token: Mapped[str] = mapped_column(String, primary_key=True)
     platform: Mapped[str] = mapped_column(String, nullable=False)  # 'ios' | 'android'
