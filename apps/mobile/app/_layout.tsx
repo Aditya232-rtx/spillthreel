@@ -37,7 +37,7 @@ SplashScreen.preventAutoHideAsync().catch(() => {
  */
 function AuthGate() {
   const { session, loading } = useAuth();
-  const segments = useSegments();
+  const segments = useSegments() as readonly string[];
   const router = useRouter();
 
   useEffect(() => {
@@ -45,13 +45,14 @@ function AuthGate() {
       return;
     }
     const group = segments[0];
+    const [, second] = segments;
     const inAuth = group === '(auth)';
     const inProtected = group === '(app)' || group === '(import)';
     // Recovery-link landing screen manages its own routing (it needs the
     // recovery session to stay put while the user sets a new password).
-    const onResetPassword = group === 'auth' && segments[1] === 'reset-password';
+    const onResetPassword = group === 'auth' && second === 'reset-password';
     // Same for the post-OAuth name step — it navigates itself onward.
-    const onYourName = inAuth && segments[1] === 'your-name';
+    const onYourName = inAuth && second === 'your-name';
 
     if (session) {
       // Verified (or OAuth) session resolves any pending confirmation.
