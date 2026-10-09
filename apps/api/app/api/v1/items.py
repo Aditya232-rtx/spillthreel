@@ -9,16 +9,21 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Annotated
 
+import ulid
 from fastapi import APIRouter, HTTPException, Query, status
 from pydantic import BaseModel
 from sqlalchemy import and_, desc, select
 
 from app.auth.middleware import CurrentUser, DbSession
 from app.db.engine import get_pg_pool
-from app.db.models import Item
+from app.db.models import IngestionEvent, Item
+from app.observability.logging import get_logger
 from app.services.memory.pgvector_store import PgVectorStore
+from app.tasks.enqueue import enqueue_task
 
 router = APIRouter()
+
+_logger = get_logger(__name__)
 
 
 class ItemSummary(BaseModel):
@@ -102,3 +107,100 @@ async def delete_item(item_id: str, user: CurrentUser, session: DbSession) -> No
     # Embedding row cascades via FK, but delete explicitly too so the
     # vector is gone even if the row delete ever stops cascading.
     await PgVectorStore(await get_pg_pool()).delete(user.id, item_id)
+
+
+# ---------------------------------------------------------------------------
+# POST /v1/items/{id}/retry + /enhance — user-triggered pipeline actions.
+# ---------------------------------------------------------------------------
+
+# Enhance is the multimodal upgrade path: text-only (or failed / already
+# full — re-run) rows go back through analyze→index on the throttled
+# enhance queue. `indexing` is the in-flight state (ITEM_STATES has no
+# dedicated "enhancing" state).
+_ENHANCEABLE_STATES = frozenset({"text_indexed", "fully_indexed", "failed"})
+
+
+class ItemActionResponse(BaseModel):
+    item_id: str
+    state: str
+
+
+@router.post("/items/{item_id}/retry", response_model=ItemActionResponse)
+async def retry_item(item_id: str, user: CurrentUser, session: DbSession) -> ItemActionResponse:
+    """Re-queue a failed item for ingestion.
+
+    failed → queued + `failure_reason` cleared + ingest task enqueued
+    (same call as the saves path, same dedup key). Already-queued is an
+    idempotent no-op (double-tap safe). Anything else → 422.
+    """
+    stmt = select(Item).where(Item.id == item_id, Item.user_id == user.id)
+    item = (await session.execute(stmt)).scalar_one_or_none()
+    if item is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
+    if item.state == "queued":
+        return ItemActionResponse(item_id=item.id, state="queued")
+    if item.state != "failed":
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"cannot retry item in state {item.state!r}",
+        )
+    item.state = "queued"
+    item.failure_reason = None
+    session.add(
+        IngestionEvent(
+            id=str(ulid.new()),
+            item_id=item.id,
+            from_state="failed",
+            to_state="queued",
+            detail={"trigger": "user_retry"},
+        )
+    )
+    await session.commit()
+    await enqueue_task(
+        "ingest",
+        {"item_id": item.id, "user_id": user.id},
+        dedup_key=f"ingest-{item.id}",
+    )
+    _logger.info("items.retry", user_id=user.id, item_id=item.id)
+    return ItemActionResponse(item_id=item.id, state="queued")
+
+
+@router.post("/items/{item_id}/enhance", response_model=ItemActionResponse)
+async def request_item_enhance(
+    item_id: str, user: CurrentUser, session: DbSession
+) -> ItemActionResponse:
+    """Queue an item for the multimodal enhance pass.
+
+    Allowed from `text_indexed` / `fully_indexed` (re-run) / `failed`
+    only (422 otherwise). Sets state → `indexing` + enqueues on the
+    throttled enhance queue.
+    """
+    stmt = select(Item).where(Item.id == item_id, Item.user_id == user.id)
+    item = (await session.execute(stmt)).scalar_one_or_none()
+    if item is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
+    if item.state not in _ENHANCEABLE_STATES:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"cannot enhance item in state {item.state!r}",
+        )
+    prev_state = item.state
+    item.state = "indexing"
+    item.failure_reason = None
+    session.add(
+        IngestionEvent(
+            id=str(ulid.new()),
+            item_id=item.id,
+            from_state=prev_state,
+            to_state="indexing",
+            detail={"trigger": "user_enhance"},
+        )
+    )
+    await session.commit()
+    await enqueue_task(
+        "enhance",
+        {"item_id": item.id, "user_id": user.id},
+        dedup_key=f"enhance-{item.id}",
+    )
+    _logger.info("items.enhance", user_id=user.id, item_id=item.id, from_state=prev_state)
+    return ItemActionResponse(item_id=item.id, state="indexing")

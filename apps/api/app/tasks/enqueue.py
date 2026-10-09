@@ -27,11 +27,11 @@ _BACKGROUND_TASKS: set[asyncio.Task[None]] = set()
 # TaskType -> (settings attr holding the queue name, worker route).
 # delete_user / category_backfill have no dedicated queue in
 # infra/modules/cloud_tasks (three queues per architecture.md), so they
-# share the ingest queue. enhance hits /work/ingest — the enhance path is
-# the same pipeline triggered from the user "Enhance" action.
+# share the ingest queue. enhance hits /work/enhance — the lighter
+# analyze→index re-run triggered by the user "Enhance" action.
 _TASK_ROUTES: dict[str, tuple[str, str]] = {
     "ingest": ("cloud_tasks_queue_ingest", "ingest"),
-    "enhance": ("cloud_tasks_queue_enhance", "ingest"),
+    "enhance": ("cloud_tasks_queue_enhance", "enhance"),
     "import": ("cloud_tasks_queue_import", "import"),
     "delete_user": ("cloud_tasks_queue_ingest", "delete_user"),
     "category_backfill": ("cloud_tasks_queue_ingest", "category_backfill"),

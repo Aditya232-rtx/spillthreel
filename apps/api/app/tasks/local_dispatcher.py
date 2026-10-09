@@ -27,6 +27,13 @@ async def dispatch_local(task_type: str, payload: dict[str, str | int | float]) 
         await ingest_item(item_id)
         return
 
+    if task_type == "enhance":
+        from app.services.ingest.enhance import enhance_item
+
+        item_id = str(payload.get("item_id"))
+        await enhance_item(item_id)
+        return
+
     if task_type == "import":
         _logger.info(
             "task.local.import_stub",

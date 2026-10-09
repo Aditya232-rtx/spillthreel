@@ -17,12 +17,15 @@ otherwise. Dev bypasses verification with an explicit log line.
 
 from __future__ import annotations
 
+from collections.abc import Callable
+from typing import Any
 from urllib.parse import urlsplit
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel
 
 from app.observability.logging import get_logger
+from app.services.ingest.enhance import enhance_item
 from app.services.ingest.pipeline import ingest_item
 from app.settings import Settings, get_settings
 
@@ -119,7 +122,15 @@ async def verify_worker_oidc(request: Request) -> None:
     from google.oauth2 import id_token as google_id_token
 
     try:
-        claims = google_id_token.verify_oauth2_token(token, GoogleRequest())
+        # google-auth ships no stubs, so its defs are untyped: bind the
+        # verifier to a typed alias and call THAT, keeping strict's
+        # no-untyped-call quiet in the full (worker-extras) env. In the
+        # lean dev env the module is Any (ignore_missing_imports) and
+        # this is a no-op.
+        verify_token: Callable[[str, GoogleRequest], dict[str, Any]] = (
+            google_id_token.verify_oauth2_token
+        )
+        claims: dict[str, Any] = verify_token(token, GoogleRequest())
     except Exception as e:
         _logger.warning("worker.oidc.invalid_token", path=request.url.path, err=str(e))
         raise HTTPException(
@@ -168,6 +179,22 @@ async def ingest_task(payload: IngestPayload) -> dict[str, str]:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"ingest_failed: {e}",
+        ) from e
+    return {"status": "ok", "item_id": payload.item_id}
+
+
+@router.post("/enhance", status_code=status.HTTP_200_OK)
+async def enhance_task(payload: IngestPayload) -> dict[str, str]:
+    """Re-runs analyze→index for an existing item. Raises 500 on any error
+    so Cloud Tasks retries with backoff — after retries are exhausted the
+    item lands in state=failed via enhance._mark_failed."""
+    try:
+        await enhance_item(payload.item_id)
+    except Exception as e:
+        _logger.exception("worker.enhance.failed", item_id=payload.item_id, err=str(e))
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"enhance_failed: {e}",
         ) from e
     return {"status": "ok", "item_id": payload.item_id}
 
