@@ -134,6 +134,9 @@ module "api" {
   env_vars = merge(local.base_env, {
     # Cloud Tasks push target for ingest/import/enhance jobs.
     WORKER_BASE_URL = module.worker.url
+    # SA email that mints Cloud Tasks OIDC tokens (enqueue.py oidc_token).
+    # Must match the api runtime SA — worker grants it roles/run.invoker.
+    CLOUD_TASKS_OIDC_SA_EMAIL = google_service_account.api.email
   })
   secret_env_vars       = local.secret_env
   allow_unauthenticated = true
@@ -161,6 +164,14 @@ module "worker" {
   })
   secret_env_vars       = local.secret_env
   allow_unauthenticated = false
+  # Cloud Tasks pushes mint OIDC tokens from the api runtime SA, so only
+  # that SA may invoke the worker. NOTE: worker gets NO WORKER_BASE_URL
+  # env on purpose — setting it to module.worker.url inside its own
+  # module block is a Terraform self-reference cycle. Audience verification
+  # still passes via the exact-request-URL match in _oidc_audience_ok
+  # (audience == push URL == request URL); the base-prefix check is
+  # optional hardening only.
+  invoker_members = ["serviceAccount:${google_service_account.api.email}"]
 }
 
 # Cobalt on Cloud Run (scale-to-zero) instead of GKE Autopilot: cheaper

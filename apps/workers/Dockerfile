@@ -1,7 +1,8 @@
 # Worker Dockerfile — builds from the REPO ROOT (context must be `.`,
 # built with `-f apps/workers/Dockerfile`) for correct COPY paths.
-# Same dependency set as the API image; serves app.worker:app via the
-# shared APP_MODULE convention (Terraform sets it explicitly anyway).
+# Same lockfile as the API image plus the `worker` extra; serves
+# app.worker:app via the shared APP_MODULE convention (Terraform sets it
+# explicitly anyway).
 
 ARG BUILD_IMAGE=python:3.12-slim
 
@@ -10,16 +11,17 @@ FROM ${BUILD_IMAGE} AS builder
 
 WORKDIR /app
 
-# Install uv for fast dependency resolution
-COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
+# Pinned uv release (never :latest — reproducible builds).
+COPY --from=ghcr.io/astral-sh/uv:0.12.5 /uv /usr/local/bin/uv
 
-# Copy dependency files first for better cache
+# Copy dependency files first for better cache. --frozen fails rather
+# than re-resolving, so the image always matches uv.lock.
 COPY apps/api/pyproject.toml apps/api/uv.lock ./
 
 # Install worker dependencies (includes API deps + worker extras).
 # --no-install-project: app sources are copied separately below, and uv
 # would otherwise fail resolving the project without them present.
-RUN uv sync --frozen --no-install-project --extra worker
+RUN uv sync --frozen --no-install-project --no-dev --extra worker
 
 # ---- Runtime ----
 FROM ${BUILD_IMAGE}

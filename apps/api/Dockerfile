@@ -1,21 +1,27 @@
-# SpillTheReel API — multi-stage: builder installs deps, runtime is slim.
+# SpillTheReel API — multi-stage: builder resolves deps strictly from
+# uv.lock, runtime is slim and carries only the resolved .venv + source.
 # The served app module comes from APP_MODULE (default app.main:app; the
 # worker service sets APP_MODULE=app.worker:app). The port comes from
-# Cloud Run's PORT env (default 8000 for local docker). See
-# apps/workers/Dockerfile for the worker image (same deps + entrypoint).
+# Cloud Run's PORT env (default 8000 for local docker). Build context is
+# apps/api (see cloudbuild.staging.yaml). See apps/workers/Dockerfile
+# for the worker image (same lockfile + `worker` extra, repo-root context).
 
 FROM python:3.12-slim AS builder
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONUNBUFFERED=1 \
-    PIP_NO_CACHE_DIR=1 \
-    PIP_DISABLE_PIP_VERSION_CHECK=1
+    PYTHONUNBUFFERED=1
 
 WORKDIR /app
 
-# uv is the fast resolver; pip is fine here since the image only builds once.
-COPY pyproject.toml ./
-RUN pip install --no-cache-dir . && pip install --no-cache-dir ".[worker]"
+# Pinned uv release (never :latest — reproducible builds).
+COPY --from=ghcr.io/astral-sh/uv:0.12.5 /uv /usr/local/bin/uv
+
+# Deps first for layer caching. --frozen fails rather than re-resolving,
+# so the image always matches uv.lock. --no-install-project: app source
+# is copied in the runtime stage, and uv would otherwise fail resolving
+# the project without it present.
+COPY pyproject.toml uv.lock ./
+RUN uv sync --frozen --no-install-project --no-dev --extra worker
 
 # ------------------------------------------------------------------
 FROM python:3.12-slim AS runtime
@@ -30,13 +36,14 @@ RUN groupadd -r app && useradd -r -g app -u 10001 app
 
 WORKDIR /app
 
-COPY --from=builder /usr/local/lib/python3.12/site-packages /usr/local/lib/python3.12/site-packages
-COPY --from=builder /usr/local/bin /usr/local/bin
+COPY --from=builder --chown=app:app /app/.venv /app/.venv
 
-COPY app ./app
-COPY alembic.ini ./
+COPY --chown=app:app app ./app
+COPY --chown=app:app alembic.ini ./
 
 USER app
+
+ENV PATH="/app/.venv/bin:$PATH"
 
 EXPOSE 8000
 

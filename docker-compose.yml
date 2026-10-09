@@ -66,6 +66,49 @@ services:
       sh -c "alembic upgrade head &&
              uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload"
 
+  worker:
+    build:
+      context: ./apps/api
+    environment:
+      ENVIRONMENT: dev
+      LOG_LEVEL: ${LOG_LEVEL:-DEBUG}
+      # Standalone worker ASGI app (TF worker sets APP_MODULE=app.worker:app;
+      # the command below selects it explicitly for local dev).
+      APP_MODULE: app.worker:app
+      PORT: 8001
+      # Same local container Postgres as the api service.
+      DATABASE_URL: postgresql+asyncpg://spill:spill@postgres:5432/spillthereel
+      DATABASE_URL_DIRECT: ${DATABASE_URL_DIRECT:-}
+      # --- Supabase (Auth verify via JWKS, Storage client) ---
+      SUPABASE_URL: ${SUPABASE_URL:-}
+      SUPABASE_PUBLISHABLE_KEY: ${SUPABASE_PUBLISHABLE_KEY:-}
+      SUPABASE_SECRET_KEY: ${SUPABASE_SECRET_KEY:-}
+      SUPABASE_LEGACY_JWT_SECRET: ${SUPABASE_LEGACY_JWT_SECRET:-}
+      SUPABASE_BUCKET_MEDIA: ${SUPABASE_BUCKET_MEDIA:-media}
+      SUPABASE_BUCKET_EXPORTS: ${SUPABASE_BUCKET_EXPORTS:-exports}
+      # --- Extractors / LLM / memory (empty = code paths that need them fail loudly) ---
+      COBALT_BASE_URL: http://cobalt:9000
+      COBALT_API_KEY: ${COBALT_API_KEY:-}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      GROQ_API_KEY: ${GROQ_API_KEY:-}
+      # --- Observability / guards ---
+      SENTRY_DSN: ${SENTRY_DSN:-}
+      SENTRY_RELEASE: ${SENTRY_RELEASE:-}
+      GIT_SHA: ${GIT_SHA:-}
+      RATE_LIMIT_DEFAULT: ${RATE_LIMIT_DEFAULT:-60/minute}
+      RATE_LIMIT_SAVES: ${RATE_LIMIT_SAVES:-10/minute}
+      CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - "8001:8001"
+    volumes:
+      - ./apps/api:/app:cached
+    command: >
+      sh -c "alembic upgrade head &&
+             uvicorn app.worker:app --host 0.0.0.0 --port 8001 --reload"
+
   cobalt:
     # Upstream image, unmodified — TRD §12.1.
     image: ghcr.io/imputnet/cobalt:10
