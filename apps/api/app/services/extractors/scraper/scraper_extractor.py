@@ -1,8 +1,8 @@
 """ScraperApiExtractor — paid-provider head of the registry chain (Part D).
 
 Provider selection comes from ``SCRAPER_PROVIDER`` (``scrapecreators`` |
-``apify`` | ``none``; default ``none`` → ``can_handle`` False so the
-chain falls through to yt-dlp/gallery-dl with zero paid calls).
+``apify`` | ``brightdata`` | ``none``; default ``none`` → ``can_handle``
+False so the chain falls through to yt-dlp/gallery-dl with zero paid calls).
 
 Media bytes are downloaded via Part C
 ``services.media.download.download_media`` with the CTO-decreed signature
@@ -43,6 +43,7 @@ from app.services.extractors.base import (
 )
 from app.services.extractors.scraper.apify import ApifyProvider
 from app.services.extractors.scraper.base import ScrapedPost
+from app.services.extractors.scraper.brightdata import BrightDataProvider
 from app.services.extractors.scraper.scrapecreators import ScrapeCreatorsProvider
 
 _logger = get_logger(__name__)
@@ -91,7 +92,7 @@ class ScraperApiExtractor:
         provider = _provider_name()
         if provider == "none":
             return False
-        if provider not in ("scrapecreators", "apify"):
+        if provider not in ("scrapecreators", "apify", "brightdata"):
             return False
         return self.platform in ("instagram", "tiktok")
 
@@ -101,6 +102,8 @@ class ScraperApiExtractor:
             post = await ScrapeCreatorsProvider().fetch(self.platform, url)
         elif provider_name == "apify":
             post = await ApifyProvider().fetch(self.platform, url)
+        elif provider_name == "brightdata":
+            post = await BrightDataProvider().fetch(self.platform, url)
         else:
             raise ExtractorError(f"scraper provider {provider_name!r} not enabled")
         return await _materialize(self.platform, post)

@@ -121,17 +121,28 @@ class Settings(BaseSettings):
     # ---------------- Paid scraper providers (Part D) ----------------
     # SCRAPER_PROVIDER=none (default) is boot-safe: the scraper head
     # degrades to can_handle False with zero paid calls. Set to
-    # "scrapecreators" | "apify" to enable the paid head on IG/TikTok.
+    # "scrapecreators" | "apify" | "brightdata" to enable the paid head
+    # on IG/TikTok.
     scraper_provider: str = "none"
     scrapecreators_api_key: str | None = None
     scrapecreators_base_url: str = "https://api.scrapecreators.com"
-    apify_token: str | None = None
+    apify_api_token: str | None = None
     apify_base_url: str = "https://api.apify.com"
     apify_ig_actor: str = "apify/instagram-scraper"
     apify_tiktok_actor: str = "clockworks/tiktok-scraper"
+    # Bright Data Web Scraper API (Bearer token; no zone/customer needed —
+    # those belong to Native Access proxy auth, not the Bearer scraper
+    # API). Dataset IDs are documented public collectors
+    # (see services/extractors/scraper/brightdata.py docstring), NOT
+    # secrets — env-overridable with documented defaults.
+    brightdata_api_token: str | None = None
+    brightdata_base_url: str = "https://api.brightdata.com"
+    brightdata_ig_post_dataset: str = "gd_lk5ns7kz21pck8jpis"
+    brightdata_ig_reel_dataset: str = "gd_lyclm20il4r5helnj"
+    brightdata_tiktok_dataset: str = "gd_lu702nij2f790tmv9h"
     scraper_max_concurrency: int = 4
     scraper_cost_per_1k_usd: str = ""
-    # Egress proxy for paid-provider API calls (scrapecreators/apify).
+    # Egress proxy for paid-provider API calls (scrapecreators/apify/brightdata).
     # Deliberately NOT honored by services/media/download.py: that
     # downloader pins DNS per-hop as its DNS-rebinding defense, which is
     # incompatible with proxying — it egresses direct to allowlisted
