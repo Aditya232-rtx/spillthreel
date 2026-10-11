@@ -27,7 +27,7 @@ Whereas the TRD documents *what* we use, this document documents *how it fits to
 | Thumbnails, GDPR exports | **Supabase Storage** | `media` + `exports` buckets, signed URLs, RLS-scoped |
 | API + workers compute | **GCP Cloud Run** | Same FastAPI codebase, two entrypoints |
 | Job queues | **GCP Cloud Tasks** | `ingest`, `import`, `enhance` queues |
-| Media extraction | **GKE Autopilot (Cobalt)** | Upstream image, internal LB, called by workers only |
+| Media extraction | **Scraper vendors (ScrapeCreators / Apify) + yt-dlp / gallery-dl in worker + YouTube-native (Gemini URL input)** | No self-hosted extractor; workers call vendors directly over default egress |
 | Memory / RAG | **pgvector in Supabase Postgres + Gemini embeddings** | One `item_embeddings` row per item, HNSW cosine index |
 | Multimodal LLM / ASR | **Gemini / Groq** | |
 
@@ -89,11 +89,12 @@ localstack in this architecture — the stateful layer is 100% Supabase Cloud
                              ┌────────────────────┘       │       └────────────────────┐
                              │                            │                            │
                              ▼                            ▼                            ▼
-                    ┌────────────────┐          ┌──────────────────┐          ┌────────────────┐
-                    │ Cobalt (GKE)   │          │ Gemini API       │          │ Groq API       │
-                    │ Extractor      │          │ (multimodal)     │          │ (long ASR)     │
-                    │ (self-hosted)  │          └──────────────────┘          └────────────────┘
-                    └────────────────┘
+                     ┌────────────────┐          ┌──────────────────┐          ┌────────────────┐
+                     │ Scraper vendors│          │ Gemini API       │          │ Groq API       │
+                     │ (ScrapeCreators│          │ (multimodal +    │          │ (long ASR)     │
+                     │ / Apify)       │          │  YouTube-native  │          └────────────────┘
+                     └────────────────┘          │  URL input)      │
+                                                 └──────────────────┘
 
                     ┌────────────────┐          ┌──────────────────┐
                     │ yt-dlp         │          │ gallery-dl       │
@@ -125,15 +126,13 @@ localstack in this architecture — the stateful layer is 100% Supabase Cloud
 
 ## 3. Service Boundaries
 
-There are three deployable units:
+There are two deployable units:
 
 1. **`api`** (Cloud Run) — synchronous HTTP layer. All client requests land here. Owns auth, validation, DB writes, task enqueue, and search orchestration. No blocking I/O beyond DB (incl. pgvector similarity) and Gemini.
 
-2. **`workers`** (Cloud Run) — asynchronous processing layer. Pulls Cloud Tasks and runs ingestion, imports, enhances. Owns extractor calls, ffmpeg, Gemini, Groq, pgvector writes, and push emission. Shares the exact codebase with `api` — only the entrypoint differs.
+2. **`workers`** (Cloud Run) — asynchronous processing layer. Pulls Cloud Tasks and runs ingestion, imports, enhances. Owns scraper-vendor calls, hardened downloads, ffmpeg, YouTube-native path, Gemini, Groq, pgvector writes, and push emission. Shares the exact codebase with `api` — only the entrypoint differs.
 
-3. **`cobalt`** (GKE Autopilot) — self-hosted media extractor. Called by workers only. Stateless. Upstream image unmodified.
-
-External managed services: Supabase Auth + Postgres (+ pgvector) + Storage (one vendor for the stateful layer), Cloud Tasks, Gemini API, Groq API, PostHog, Sentry, Expo push service. GCP keeps compute + queues (Cloud Run, Cloud Tasks, GKE for Cobalt); there is no Cloud SQL / Cloud Storage / Firebase in this architecture anymore.
+External managed services: Supabase Auth + Postgres (+ pgvector) + Storage (one vendor for the stateful layer), Cloud Tasks, ScrapeCreators / Apify (scraper vendors), YouTube Data API v3 (metadata only), Gemini API, Groq API, PostHog, Sentry, Expo push service. GCP keeps compute + queues (Cloud Run, Cloud Tasks) over default egress — no NAT/proxy, no self-hosted extractor; there is no Cloud SQL / Cloud Storage / Firebase in this architecture anymore.
 
 ---
 
@@ -176,8 +175,8 @@ Cloud Tasks fires task → Cloud Run worker
         ▼
 Worker.ingest(item_id):
   1. SELECT items.state → 'downloading', UPDATE.
-  2. Extractor registry: try Cobalt → success or fallback to yt-dlp.
-  3. ffmpeg: extract audio + sample frames.
+  2. Extractor registry: instagram [ScraperApiExtractor → YtDlp → GalleryDl]; tiktok [ScraperApiExtractor → YtDlp]; x [YtDlp → GalleryDl]; youtube native path (Gemini URL input, no registry).
+  3. Non-YouTube: hardened download (https-only, DNS-pinned, allowlist) → ffmpeg: extract audio + sample frames. YouTube: oEmbed + Data API v3 → guardrails → Gemini FileData URL input (no download).
   4. If duration < 5 min: Gemini multimodal call with frames + audio.
      If ≥ 5 min: Groq Whisper transcribe → Gemini with frames + transcript.
   5. Parse StructuredSummary, validate.
@@ -389,11 +388,11 @@ spillthereel/
 │   │   │   │   └── migrations/              # Alembic
 │   │   │   ├── services/
 │   │   │   │   ├── extractors/
-│   │   │   │   │   ├── base.py              # Extractor Protocol
-│   │   │   │   │   ├── cobalt.py
+│   │   │   │   │   ├── base.py              # Extractor Protocol (+ SourceGoneError / ProviderQuotaError)
+│   │   │   │   │   ├── scraper/             # ScraperApiExtractor (ScrapeCreators REST + Apify run-sync), SCRAPER_PROVIDER switch
 │   │   │   │   │   ├── ytdlp.py
 │   │   │   │   │   ├── gallerydl.py
-│   │   │   │   │   └── registry.py
+│   │   │   │   │   └── registry.py          # IG [scraper→ytdlp→gallerydl], TikTok [scraper→ytdlp], X [ytdlp→gallerydl]; YouTube native (no registry)
 │   │   │   │   ├── memory/
 │   │   │   │   │   ├── base.py              # MemoryStore Protocol
 │   │   │   │   │   └── pgvector_store.py    # PgVectorStore (sole backend)
@@ -455,17 +454,14 @@ spillthereel/
 │   │   │   ├── cloud_run_service/
 │   │   │   ├── cloud_tasks/
 │   │   │   ├── secrets/
-│   │   │   └── gke_cobalt/
+│   │   │   │   # (empty shells only: Supabase, Gemini, Groq, SCRAPECREATORS_API_KEY, APIFY_API_TOKEN, YOUTUBE_API_KEY — values by hand)
 │   │   # NOTE: no cloud_sql/ or gcs/ modules — Postgres + Storage
-│   │   # are Supabase-managed, not Terraform-managed.
+│   │   # are Supabase-managed, not Terraform-managed. No extractor
+│   │   # service, no NAT/proxy — workers use default egress.
 │   │   ├── environments/
 │   │   │   ├── staging/
 │   │   │   └── prod/
 │   │   └── main.tf
-│   └── cobalt/
-│       ├── deployment.yaml
-│       ├── service.yaml
-│       └── hpa.yaml
 │
 ├── docs/
 │   ├── prd.md
@@ -710,13 +706,13 @@ Any step can fail; failure is captured in `items.failure_reason` and drives the 
     └──────────────┬───────────────┘
                    ▼ push HTTPS
     ┌──────────────────────────────┐
-    │ Cloud Run — worker (internal)│──── outbound: Cobalt, Gemini, Groq,
-    │ 2 vCPU / 2 GiB / min 0 max 30│                Supabase (via service-role key)
+    │ Cloud Run — worker (internal)│──── outbound (default egress): scraper vendors,
+    │ 2 vCPU / 2 GiB / min 0 max 30│                Gemini (incl. YouTube-native URL input),
+    │                               │                Groq, Supabase (via service-role key)
     └──────────────────────────────┘
 
-    ┌──────────────────────────────┐
-    │ GKE Autopilot — Cobalt        │◄──── inbound from workers only (internal LB)
-    └──────────────────────────────┘
+    (No self-hosted extractor, no NAT/proxy. Egress verified with
+    `apps/api/scripts/egress_check.py` from Cloud Shell.)
 
     ┌──────────────────────────────┐
     │ Cloud CDN                     │
@@ -729,7 +725,7 @@ Any step can fail; failure is captured in `items.failure_reason` and drives the 
 
 - Cloud Run is regional but auto-recovers on zone failures.
 - Supabase Postgres automated backups with 7-day PITR (Pro tier); no self-managed DB failover to operate.
-- Cobalt cluster runs across ≥ 2 zones via GKE Autopilot.
+- No extractor cluster to fail over — scraper vendors + YouTube-native degrade per the registry fallbacks (TRD §12.6) and surface as `source_gone`/`failed` with typed reasons.
 - Disaster recovery region (`us-east1`) is a documented runbook only — no live capacity in v1 (revisit at 10k+ DAUs).
 
 ---
@@ -812,7 +808,9 @@ docker-compose up:
   - postgres:16 (Supabase-compatible schema for local dev)
   - api (FastAPI, hot-reload)
   - worker (FastAPI worker mode)
-  - cobalt (upstream image)
+  (No extractor container — scraper head is `SCRAPER_PROVIDER=none` no-op locally;
+  YouTube path is metadata-only without keys. Paid paths verified via
+  `apps/api/scripts/egress_check.py` from Cloud Shell, not via staging cluster.)
   ↓
 Mobile:
   npx expo start
@@ -843,8 +841,8 @@ Places designed for future feature expansion without re-architecting:
 - Single-region v1 is sufficient (< 100 ms P50 latency to users on non-US ISPs is acceptable).
 - Cloud Run cold starts (~1 s) are tolerable since first request goes through Cloud LB.
 - Supabase Postgres (incl. pgvector) meets its managed SLO; similarity is a local index lookup, no external hop.
-- Instagram, TikTok, YouTube, X don't drop unauthenticated public URL access wholesale.
-- GKE Autopilot for Cobalt is cheaper than dedicating Cloud Run RAM to it at expected scale (revisit if Cobalt QPS < 10).
+- Instagram, TikTok, YouTube, X don't drop unauthenticated public URL access wholesale (YouTube via URL input + metadata; IG/TikTok via paid scraper vendors that absorb the anti-bot arms race).
+- Default Cloud Run egress suffices for vendor APIs + Gemini + Supabase — no NAT/proxy, no self-hosted fetcher (see TRD §22 for why the self-hosted extractor was retired).
 
 ---
 

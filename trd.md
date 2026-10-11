@@ -47,12 +47,13 @@ Any technical decision not documented here should default to the simplest option
 | Memory / RAG | pgvector on Supabase Postgres + Gemini embeddings (`gemini-embedding-001`, 768-dim) behind our `MemoryStore` interface | Zero new vendors; ~1/500th the per-document cost of a hosted graph pass |
 | Multimodal LLM | Gemini 2.5 Flash-Lite / Flash / Pro (migrating to Gemini 3.x pre-Oct 2026) | One provider for video + audio + image + summary |
 | ASR fallback (long audio) | Groq Whisper-v3-turbo | Cheapest ASR for content ≥ 5 min |
-| Extractor — primary | Cobalt (self-hosted on GKE Autopilot) | Purpose-built for social; AGPL-3.0 (compliance note in §12) |
-| Extractor — fallback | yt-dlp (Python subprocess in worker) | Widest coverage, edge cases |
+| Extractor — IG/TikTok head | Scraper layer (`services/extractors/scraper/`): ScrapeCreators REST + Apify run-sync actors (`apify/instagram-scraper`, `clockworks/tiktok-scraper`), selected by `SCRAPER_PROVIDER=none\|scrapecreators\|apify` | Paid per-item APIs; `none` degrades the head to no-op with zero paid calls |
+| Extractor — X/edge fallback | yt-dlp (Python subprocess in worker) | Widest coverage, edge cases |
 | Extractor — images | gallery-dl (Python subprocess in worker) | IG carousels / X image threads |
+| Extractor — YouTube | Native path: Gemini FileData YouTube-URL input + oEmbed / Data API v3 metadata (no download) | `YOUTUBE_NATIVE_ENABLED=false` escapes to yt-dlp |
 | Media processing | ffmpeg (system binary in worker container) | Thumbnails, frame sampling, audio extraction |
 | IG export parser | BeautifulSoup4 + lxml | HTML export from Meta |
-| Deployment | GCP: Cloud Run (API + workers), Cloud Tasks, GKE Autopilot (Cobalt) + Supabase Cloud (Auth, Postgres, Storage) | Two vendors: GCP for compute + queues near Gemini, Supabase for stateful data. Drops Cloud SQL (~$70/mo min) and GCS (per-op billing) in favor of Supabase's flat pricing. |
+| Deployment | GCP: Cloud Run (API + workers), Cloud Tasks + Supabase Cloud (Auth, Postgres, Storage) | Two vendors: GCP for compute + queues near Gemini, Supabase for stateful data. Drops Cloud SQL (~$70/mo min) and GCS (per-op billing) in favor of Supabase's flat pricing. Default egress — no NAT/proxy, no self-hosted extractor service. |
 | CI/CD | GitHub Actions → EAS Build/Submit + gcloud deploy | Standard, cheap |
 | Observability | Cloud Logging + Cloud Trace + Sentry (mobile + backend) | Managed + best-in-class error monitoring |
 | Analytics | PostHog (self-host later, cloud v1) | Product analytics + feature flags |
@@ -74,7 +75,6 @@ spillthereel/
     shared-types/      # TypeScript + Python (pydantic) shared model definitions via a schema generator
   infra/
     terraform/         # GCP resources
-    cobalt/            # Cobalt self-hosted manifests (GKE Autopilot)
   docs/
     prd.md
     trd.md
@@ -291,15 +291,16 @@ Postgres INSERT (items row, state=queued)
 Cloud Task enqueued: task_type=ingest, item_id=...
    ↓
 Cloud Run worker picks task
-   ↓
-   1. Platform detection (regex)
+    ↓
+   1. Platform detection + URL normalization (regex; YouTube watch/shorts/youtu.be collapse to canonical `https://www.youtube.com/watch?v=<id>`)
    2. Extractor selection (interface, §7.3)
-   3. Media download (video, audio, thumbnails)
+   3a. YouTube native path: oEmbed + Data API v3 metadata → guardrails → Gemini FileData URL input (no download, no ffmpeg)
+   3b. Other platforms: hardened media download (SSRF: https-only, DNS-pinned, `MEDIA_HOST_ALLOWLIST`, caps 100/20/20 MB video/image/audio)
    4. Frame sampling (ffmpeg, 1 frame / 2s)
    5. Long-audio branch: ffmpeg extract audio → Groq Whisper
-   6. Gemini multimodal call (frames + audio or transcript)
+   6. Gemini multimodal call (frames + audio or transcript; YouTube: URL + metadata)
    7. Structured summary parsing (Pydantic)
-   8. Thumbnail upload to GCS
+   8. Thumbnail upload to Supabase Storage
    9. MemoryStore.write() → pgvector (embed + upsert row)
   10. Postgres UPDATE state=fully_indexed
   11. SSE emit + push notification
@@ -335,7 +336,14 @@ class ExtractResult(BaseModel):
     resolved_at: datetime
 ```
 
-Implementations: `CobaltExtractor`, `YtDlpExtractor`, `GalleryDlExtractor`. A registry maps `Platform → list[Extractor]` with priority order (Cobalt first, yt-dlp fallback). If all fail, item transitions to `failed`.
+Implementations: `ScraperApiExtractor` (ScrapeCreators REST or Apify run-sync, chosen by `SCRAPER_PROVIDER`), `YtDlpExtractor`, `GalleryDlExtractor`, plus the YouTube native path (no registry — oEmbed + Data API v3 → Gemini FileData URL input). A registry maps `Platform → list[Extractor]` with priority order:
+
+- instagram: `[ScraperApiExtractor, YtDlp, GalleryDl]`
+- tiktok: `[ScraperApiExtractor, YtDlp]`
+- x: `[YtDlp, GalleryDl]`
+- youtube: native path (no registry entry; `YOUTUBE_NATIVE_ENABLED=false` escapes to yt-dlp)
+
+Error taxonomy: `SourceGoneError` → item `source_gone` (never walked past); `ProviderQuotaError` (credits/auth) → never treated as gone, falls through to the next extractor; any other transient `ExtractorError` → falls through. If all fail, item transitions to `failed`. Every scraper call is cost-logged (`scraper.call`).
 
 ### 7.4 `MemoryStore` interface
 
@@ -358,13 +366,23 @@ Isolation: every query carries `WHERE user_id = :current_user` against the `item
 
 ### 7.5 Gemini call structure
 
-For a typical short reel (≤ 90s):
+For a typical short reel (≤ 90s, non-YouTube):
 
 - Input: sampled frames (up to 45) + full audio track + system prompt requesting the F2.5 structured summary.
 - Model: `gemini-2.5-flash-lite` (default), `gemini-2.5-pro` on user "Deep" preference.
 - Output: JSON matching the summary schema, validated by Pydantic.
 - On JSON parse error: one retry with a repair prompt.
-- Cost estimate per reel (Flash-Lite): ~$0.008–$0.015 depending on duration.
+- Cost estimate per reel (Flash-Lite): ~$0.008–$0.015 depending on duration (downloaded-media path).
+
+**YouTube native path:** no frames/audio download. Gemini takes the public watch URL as a FileData video part (`Part(file_data=FileData(file_uri=<watch URL>))`, supported by all 2.5 models, default 2.5-flash-lite) plus oEmbed/Data API metadata hints. Token math: LOW ≈ 66 tok/frame @1fps + 32 tok/s audio ≈ ~100 tok/s; the 600s cap (§7.5b) → ~60k in-tokens ≈ ~$0.006/item low-res at flash-lite $0.10/1M (+~$0.003 output).
+
+### 7.5b YouTube guardrails
+
+- Duration source: Data API v3 `videos.list` (snippet, contentDetails, status) when `YOUTUBE_API_KEY` is set; oEmbed-only otherwise.
+- `youtube_duration_unknown`: no API key to verify duration → fail loud (never silently ingest unbounded content).
+- `youtube_too_long`: duration > `YOUTUBE_MAX_DURATION_SECONDS` (default 600s) → `failed` with machine-readable reason.
+- `youtube_not_public`: oEmbed 401/403/404 or Data API empty/non-public status → `source_gone`.
+- Escape hatch: `YOUTUBE_NATIVE_ENABLED=false` falls through to the yt-dlp registry path.
 
 ### 7.6 Long-content branch (≥ 5 min)
 
@@ -376,11 +394,12 @@ For a typical short reel (≤ 90s):
 
 | Item type | Extractor | ASR | Gemini | Total est. |
 |-----------|-----------|-----|--------|------------|
-| Reel ≤ 90s | Cobalt (~free) | Gemini implicit | Flash-Lite | $0.008–$0.015 |
-| Long YT (5–30 min) | yt-dlp | Groq Whisper | Flash | $0.05–$0.10 |
+| Reel ≤ 90s (IG/TikTok/X) | Scraper API (one-to-few $/1K items) | Gemini implicit | Flash-Lite | $0.008–$0.015 + scraper line item |
+| YouTube ≤ 600s (native) | none (URL input) + Data API `videos.list` = 1 quota unit (~10k/day free) | Gemini implicit (~100 tok/s) | Flash-Lite (~60k in-tokens @ cap ≈ $0.006 + ~$0.003 output) | ~$0.009 |
+| Long YT (5–30 min, yt-dlp escape) | yt-dlp | Groq Whisper | Flash | $0.05–$0.10 |
 | IG image carousel | gallery-dl | n/a | Flash-Lite | $0.003–$0.006 |
 | IG bulk-import (text-indexed) | none | none | Embedding only | ~$0.0001 |
-| Enhance (single item) | same as reel | same as reel | same as reel | $0.008–$0.015 |
+| Enhance (single item) | same as reel | same as reel | same as reel | $0.008–$0.015 + scraper line item |
 
 Per-user daily budget alarm: $0.50. Monthly per-user target for typical usage: < $3.
 
@@ -854,29 +873,38 @@ class TranscriptionModel(Protocol):
 
 ## 12. Extractor Layer — Detail
 
-### 12.1 Cobalt (primary)
+### 12.1 Scraper layer (IG/TikTok head) — `services/extractors/scraper/`
 
-- Deployed to GKE Autopilot cluster in the same GCP region as our workers.
-- **Docker image**: upstream `ghcr.io/imputnet/cobalt:latest` (or a version-pinned tag), unmodified.
-- Configured with API key auth (`API_URL_KEY`) — our workers include the key in every request.
-- Zero persistent volume; ephemeral by design.
-- HPA: min 2 pods, max 10.
-- Called from workers via HTTP: `POST /api/json { "url": ..., "downloadMode": "auto" }` → returns tunneled download URL.
+- Two providers behind one `ScraperApiExtractor`: **ScrapeCreators REST** and **Apify run-sync** actors (`apify/instagram-scraper`, `clockworks/tiktok-scraper`).
+- Selected by `SCRAPER_PROVIDER=none|scrapecreators|apify` (`none` default is boot-safe: the head degrades to no-op, `can_handle=False`, zero paid calls).
+- Error taxonomy: `SourceGoneError` → item `source_gone` (never walked past); `ProviderQuotaError` (credits/auth) → logged at error level, falls through, never treated as gone; any other transient `ExtractorError` → warning + fallthrough to the next registry entry.
+- Cost observability: every call logged with `scraper.call` (provider, platform, item, cost class).
 
-**AGPL-3.0 compliance note:** We run upstream Cobalt unmodified. If we ever modify Cobalt, AGPL requires we make our modified source available to users of the network service. Our SpillTheReel application code is not derivative of Cobalt (we talk to it over HTTP) and is therefore not encumbered. Any Cobalt modifications must live in `infra/cobalt/` and be public.
+### 12.2 YouTube native path (no registry)
 
-### 12.2 yt-dlp (fallback)
+- Gemini takes the public watch URL as a FileData video part (2.5-flash-lite default; all 2.5 models support YouTube-URL input). No download, no ffmpeg.
+- Metadata: oEmbed (no key) + Data API v3 `videos.list` (1 quota unit; ~10k/day free) when `YOUTUBE_API_KEY` is set.
+- Guardrails: `youtube_duration_unknown` / `youtube_too_long` (600s default, `YOUTUBE_MAX_DURATION_SECONDS`) / `youtube_not_public` → `source_gone`.
+- Escape hatch: `YOUTUBE_NATIVE_ENABLED=false` falls through to yt-dlp.
+
+### 12.3 yt-dlp (fallback / X head)
 
 - Vendored as a Python package (`yt-dlp`) inside the worker container.
 - Invoked in-process via the Python API (not subprocess) for speed.
 - Cookies: none by default. If a specific platform demands cookies, we add a per-platform cookie file managed as a Secret Manager secret and refreshed manually on breakage.
+- Heads the X chain; second on IG/TikTok; YouTube escape hatch.
 
-### 12.3 gallery-dl (image content)
+### 12.4 gallery-dl (image content)
 
 - Vendored as a Python package.
-- Handles IG carousels and X image threads.
+- Handles IG carousels and X image threads. Sits LAST on the image-post platforms (instagram, x): a video URL an upstream extractor can handle never reaches it.
 
-### 12.4 Extractor selection & fallback
+### 12.5 Hardened downloader — `services/media/download.py`
+
+- SSRF defense: https-only, manual redirect walk (max 3 hops, every hop re-validated), host suffix-allowlist (`MEDIA_HOST_ALLOWLIST`), in-process DNS resolution with private-link rejection, DNS-pinned single request per hop (collapses the validate→connect TOCTOU window).
+- Caps: 100 MB video / 20 MB image / 20 MB audio. Egress proxy (`OUTBOUND_PROXY_URL`) is honored by paid-provider API calls only — NOT by this downloader (DNS-pinning requires direct egress).
+
+### 12.6 Extractor selection & fallback
 
 ```python
 async def extract(url: str) -> ExtractResult:
@@ -908,8 +936,7 @@ Per-extractor per-platform success rate is a first-class metric (§17).
 | Postgres | **Supabase** | Pro tier ($25/mo flat, 8 GB, autoscaling storage) | Session-mode pooler on `:6543` for the API; direct on `:5432` for Alembic |
 | Object storage | **Supabase Storage** | 2 buckets: `media` (private, thumbnails), `exports` (private, GDPR JSON) | RLS-scoped; signed URLs for client fetches, 24h TTL for exports |
 | Auth | **Supabase Auth** | Google + Apple + Email providers | Asymmetric JWTs (ES256/RS256); backend verifies offline via project's public JWKS |
-| GKE Autopilot | GCP | Cobalt namespace, 2–10 pods | Same region as Cloud Run |
-| Secret Manager | GCP | Supabase URL + publishable key + secret key (+ optional legacy JWT secret), Gemini key, Groq key, Cobalt API key | IAM-gated to Cloud Run service accounts. JWKS is a public URL — not a secret. |
+| Secret Manager | GCP | Supabase URL + publishable key + secret key (+ optional legacy JWT secret), Gemini key, Groq key, ScrapeCreators key, Apify token, YouTube API key (empty shells in TF; values added by hand) | IAM-gated to Cloud Run service accounts. JWKS is a public URL — not a secret. |
 | Cloud CDN | GCP | In front of Supabase Storage signed URLs | Cache TTL 30d for thumbnails |
 
 ### 13.2 Environments
@@ -938,7 +965,7 @@ Terraform in `infra/terraform/`. State in GCS bucket with versioning. Modules pe
 
 ### 14.2 API → Extractors
 
-- Per-user Cobalt calls: 60/hour (share-sheet + enhance combined).
+- Per-user scraper calls: 60/hour (share-sheet + enhance combined).
 - Bulk-import Full-Multimodal queue: throttled at 20 items/hour per user (F8.11) via Cloud Tasks queue rate limit.
 
 ### 14.3 API → Gemini
@@ -1113,14 +1140,17 @@ Assumptions (typical mid-cohort user):
 - 10 searches / month.
 
 Per-user monthly:
-- Gemini: 30 × $0.012 (share saves) + 200 × $0.012 (auto-enhance) + 10 × $0.003 (search synthesis) ≈ $2.79
+- Gemini downloaded-media: 30 × $0.012 (share saves) + 200 × $0.012 (auto-enhance) + 10 × $0.003 (search synthesis) ≈ $2.79 (non-YouTube baseline)
+- Gemini YouTube-native: LOW ≈ 66 tok/frame @1fps + 32 tok/s audio ≈ ~100 tok/s; 600s cap → ~60k in-tokens ≈ ~$0.006/item low-res at flash-lite $0.10/1M (+~$0.003 output). Free tier: 8 YouTube-hrs/day ≈ ~48×600s items/day.
+- YouTube Data API: `videos.list` = 1 quota unit (~10k/day free) — effectively zero marginal cost.
+- Scraper APIs (IG/TikTok head): ≈ one-to-few $/1K items, cost-logged per call (`scraper.call`). Replaces the old self-hosted zero-marginal-cost assumption.
 - Embeddings (`gemini-embedding-001`, $0.15/1M input tokens): ~500 tokens/item → 30 saves ≈ $0.002/mo + 10 searches ≈ $0.0002/mo + a 2,000-item import ≈ $0.15 one-time. Effectively near-zero marginal cost — a major reduction from the prior hosted-graph estimate it replaces.
 - Groq: negligible unless long-form YT
 - Supabase Pro: $25/mo flat baseline + $0.125/GB storage over 100GB + $0.09/GB egress over 250GB — at expected v1 volumes ≈ $0.02 / user / month amortized
 - Cloud Run + Cloud Tasks: ~$0.10 / user / month at scale
-- Cobalt (GKE): ~$0.05 / user / month at scale
+- No self-hosted extractor cost (no GKE/NAT/proxy; default egress).
 
-**Total ≈ $3 per active user per month steady-state.** Fixed baseline (Supabase Pro + GKE minimums) is ~$60/mo — sustainable free-tier up to ~15k active users on runway alone; monetization kicks in at 1–5 lakh users (per PRD §7).
+**Total ≈ $3 per active user per month steady-state, plus scraper line items (volume-dependent) and ~$0.009 per YouTube-native item.** Fixed baseline (Supabase Pro minimums) is ~$30/mo — sustainable free-tier on runway alone; monetization kicks in at 1–5 lakh users (per PRD §7).
 
 **Baseline savings from Supabase vs GCP-native:** Cloud SQL Postgres minimum ($70/mo for a 2-vCPU HA instance) + GCS ops billing + VPC connector complexity → all replaced by Supabase Pro at $25/mo flat with better DX (RLS, built-in auth, one dashboard).
 
@@ -1141,3 +1171,21 @@ Per-user monthly:
 - **Chunking strategy for very long captions in text-indexed items** — one vector per item means no chunking today; do we pre-truncate corpora > ~8000 tokens before embedding? Draft: yes, truncate for the embedding input and keep full text in Postgres.
 - **User-provided taxonomy override** — should users be able to define their own custom categories that then influence category-clarity heuristic? Deferred to v1.5.
 - **HNSW recall tuning** — current index uses pgvector defaults; measure recall@5 on the hand-labeled query set and tune (m/ef_search) only if below the ≥0.85 target.
+
+---
+
+## 22. ADR — Why Cobalt was retired
+
+**Context.** Ingestion originally assumed a self-hosted Cobalt on GKE Autopilot as the primary extractor (zero marginal cost per item, AGPL-3.0 upstream image). In practice the datacenter-egress constraint killed it: Instagram/TikTok/X anti-bot stacks fingerprint cloud-IP egress, so a self-hosted fetcher running on GCP IPs gets blocked at rates that make it useless as a primary — while still charging us GKE minimums, NAT/proxy complexity, and AGPL compliance surface.
+
+**Decision.** Delete Cobalt everywhere (code, compose, infra, README, local-dev.sh, `.env.example`) and rebuild ingestion as:
+
+1. **Scraper-vendor head for IG/TikTok** (`services/extractors/scraper/`, `SCRAPER_PROVIDER=none|scrapecreators|apify`) — vendors absorb the residential-proxy / fingerprint-rotation arms race and charge per item (one-to-few $/1K). `none` keeps local dev boot-safe with zero paid calls.
+2. **YouTube-native path** — Gemini FileData YouTube-URL input (2.5-flash-lite default) + oEmbed / Data API v3 metadata, no download at all. YouTube wants server-side fetches and prices them kindly (1 quota unit, ~10k/day free); fighting that with a generic downloader was always the wrong shape.
+3. **yt-dlp / gallery-dl as fallbacks** — kept where they win (X head, edge cases, image threads), behind a hardened SSRF downloader (https-only, DNS-pinned, allowlist, byte caps).
+4. **Explicit fallbacks with typed errors** — `SourceGoneError` → `source_gone`, `ProviderQuotaError` → never-gone fallthrough, transient → fallthrough, YouTube guardrails (`youtube_duration_unknown` / `youtube_too_long` / `youtube_not_public`) + `YOUTUBE_NATIVE_ENABLED` escape hatch.
+5. **Egress verified by script, not by staging cluster** — `apps/api/scripts/egress_check.py` (Cloud Shell, table output, `--full` burns tokens) replaces the old "Cobalt staging download" exit criterion.
+
+**Consequences.** Marginal cost per item is no longer ~zero: scraper line items + Gemini video tokens (§7.5, §19) replace the old Cobalt zero-cost row. Infra loses a service, its outputs, NAT/proxy, and ~$30/mo of GKE minimums; new secrets are `SCRAPECREATORS_API_KEY`, `APIFY_API_TOKEN`, `YOUTUBE_API_KEY` (empty shells in TF, values by hand).
+
+**Legal note (explicit).** Scraping third-party platforms carries ToS/legal risk. Vendors shift this *technically* (residential egress, fingerprint rotation) but not *legally*: the risk posture of fetching third-party content without a platform agreement is unchanged by paying a vendor instead of self-hosting. We mitigate with user-initiated-only fetching (share-sheet URLs the user explicitly submitted, or Meta-issued exports), no credential use, no re-hosting (summaries + thumbnails only, deep-link back), and per-user throttling — but vendor abstraction must not be mistaken for legal cover.

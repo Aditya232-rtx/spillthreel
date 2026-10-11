@@ -14,7 +14,7 @@ spillthereel/
   infra/              Terraform — staging only, NEVER applied yet
   docs/               PRD, TRD, architecture, build phases, oauth-setup
   scripts/            local-dev.sh — one-command local stack
-  docker-compose.yml  Local Postgres + API + Cobalt
+  docker-compose.yml  Local Postgres + API + worker
   .github/workflows/  api-ci, mobile-ci, terraform-plan, eas-preview (manual)
 ```
 
@@ -43,7 +43,6 @@ stack, waits for the API health probe, and prints URLs:
 | Service | URL |
 |---|---|
 | API | http://localhost:8000 (docs: `/docs`, health: `/health`) |
-| Cobalt | http://localhost:9000 |
 | Postgres | localhost:5432 (user `spill`, db `spillthereel`) |
 
 Mobile (separate terminal):
@@ -149,8 +148,6 @@ Layout: `modules/` (`artifact_registry`, `cloud_run_service`, `secret_manager`,
 (`main.tf`, `variables.tf`, `outputs.tf`, `backend.tf`,
 `terraform.tfvars.example`). Dropped after the Supabase migration: Cloud SQL,
 Cloud Storage buckets, VPC connector, Cloud CDN (all Supabase-managed now).
-Cobalt runs on Cloud Run (scale-to-zero) instead of GKE Autopilot for staging —
-see the GKE-switch note in `envs/staging/main.tf`.
 
 Validate (no credentials needed, nothing applied):
 

@@ -1,5 +1,43 @@
 # Changelog
 
+## Unreleased — Retire Cobalt, rebuild ingestion (scraper vendors + YouTube-native)
+
+Why: datacenter egress gets blocked by platform anti-bot stacks, so a
+self-hosted fetcher on GCP IPs fails as a primary while still charging
+GKE minimums + NAT/proxy complexity. Vendors absorb that arms race per
+item; YouTube wants server-side URL input and prices it kindly.
+
+- **Cobalt deleted everywhere** — code, compose, infra, README,
+  local-dev.sh, `.env.example`. No extractor service/outputs, no
+  NAT/proxy; workers use default egress.
+- **Scraper layer** (`services/extractors/scraper/`): ScrapeCreators REST
+  + Apify run-sync actors (`apify/instagram-scraper`,
+  `clockworks/tiktok-scraper`), `SCRAPER_PROVIDER=none|scrapecreators|
+  apify` (`none` boot-safe no-op). `SourceGoneError`→`source_gone`,
+  `ProviderQuotaError`→never-gone fallthrough, transient→fallthrough;
+  cost log `scraper.call`.
+- **Registry chains**: instagram [ScraperApiExtractor, YtDlp, GalleryDl],
+  tiktok [Scraper, YtDlp], x [YtDlp, GalleryDl], youtube native (no
+  registry; `YOUTUBE_NATIVE_ENABLED=false` escapes to yt-dlp).
+- **YouTube native**: Gemini FileData URL input (2.5-flash-lite default),
+  oEmbed + Data API v3 metadata, guardrails `youtube_duration_unknown` /
+  `youtube_too_long` (600s default) / `youtube_not_public`→`source_gone`.
+- **Hardened downloader**: https-only, DNS-pinned, allowlist
+  `MEDIA_HOST_ALLOWLIST`, caps 100/20/20 MB. Canonical YouTube watch
+  URLs + `is_shorts_url`.
+- **Secrets**: `SCRAPECREATORS_API_KEY`, `APIFY_API_TOKEN`,
+  `YOUTUBE_API_KEY` (empty shells in TF; values by hand).
+- **Cost model**: scraper line items (≈ one-to-few $/1K) + Gemini video
+  tokens (~100 tok/s; 600s cap ≈ 60k in-tokens ≈ ~$0.006 + ~$0.003
+  output) replace the Cobalt zero-cost row.
+- **Egress check**: `apps/api/scripts/egress_check.py` (Cloud Shell,
+  table output, `--full` burns tokens) replaces staging-download checks.
+- **Docs**: TRD ingestion/extractor/cost/infra rewritten + ADR "Why
+  Cobalt was retired" (§22, incl. explicit ToS/legal-risk note);
+  architecture, PRD, buildphase, updates rewritten around new chains.
+  Note: scraping third-party platforms carries ToS/legal risk that
+  vendors shift technically but not legally.
+
 ## Unreleased — pgvector memory layer replaces Cognee Cloud
 
 Why: nothing in the feature set uses graph extraction — plain cosine search

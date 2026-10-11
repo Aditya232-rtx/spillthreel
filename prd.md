@@ -93,7 +93,7 @@ Saves educational shorts (finance, science, coding, languages). Wants to build a
 
 - **LinkedIn** (v2, via paid extractor)
 - **Facebook Reels / Watch** (v2)
-- **Reddit videos / images** (v2, low effort — Cobalt supports it)
+- **Reddit videos / images** (v2, low effort — gallery-dl/yt-dlp cover it)
 - **Pinterest** (v2)
 - **Podcasts / audio-only** (v2.5, changes the pipeline)
 - **TikTok bulk import** (v1.5, if their export format matures)
@@ -140,11 +140,12 @@ Saves educational shorts (finance, science, coding, languages). Wants to build a
 **Sub-features:**
 
 - **F2.1 — URL resolution & platform detection.** Regex-based classifier maps URL → platform → extractor.
-- **F2.2 — Media extraction.** Backend calls the correct extractor:
-  - **Cobalt** (self-hosted on our GKE) for TikTok, X, IG Reels, YT Shorts — primary
-  - **yt-dlp** for edge cases and long-form YT — fallback
-  - **gallery-dl** for IG carousels / X image threads — image-only content
-  - All three sit behind a single `Extractor` interface (see TRD).
+- **F2.2 — Media extraction.** Backend resolves media per platform (see TRD §12):
+  - **Scraper vendors** (ScrapeCreators REST / Apify actors, `SCRAPER_PROVIDER` switch) for IG Reels + TikTok — paid head, `none` degrades to no-op locally
+  - **YouTube-native** (Gemini FileData URL input + oEmbed / Data API v3, no download) for Shorts + standard videos ≤ 600s default; `YOUTUBE_NATIVE_ENABLED=false` escapes to yt-dlp
+  - **yt-dlp** for X + edge cases — X head, IG/TikTok fallback
+  - **gallery-dl** for IG carousels / X image threads — image-only content, last in chain
+  - All sit behind a single `Extractor` interface; `SourceGoneError` → `source_gone`, quota/transient → fallthrough (see TRD).
 - **F2.3 — Audio transcription.** Extracted audio is transcribed:
   - Content < 5 min: sent directly to **Gemini 2.5 Flash / Gemini 3 Flash** as multimodal input (transcription happens implicitly during understanding).
   - Content ≥ 5 min: audio-only extracted with `ffmpeg`, transcribed with **Groq Whisper-v3-turbo** (cheaper for long-form), then fed as text to Gemini.
@@ -164,7 +165,7 @@ Saves educational shorts (finance, science, coding, languages). Wants to build a
     "duration_seconds": number
   }
   ```
-- **F2.6 — Thumbnail generation.** Middle-frame thumbnail + poster frame extracted with `ffmpeg`, stored in Cloud Storage, served via signed URL.
+- **F2.6 — Thumbnail generation.** Middle-frame thumbnail + poster frame extracted with `ffmpeg` (downloaded-media path; YouTube-native reuses the oEmbed thumbnail), stored in Supabase Storage, served via signed URL.
 - **F2.7 — Memory-layer indexing.** Summary + transcript + metadata embedded via Gemini and upserted to the user's pgvector rows. Embeddings + HNSW index live in our own Postgres; no external memory vendor.
 - **F2.8 — Auto-categorization.** Topics from F2.5 are mapped to a canonical taxonomy (Food, Fitness, Travel, Tech, Fashion, Finance, DIY, Comedy, Education, Product, Music, Other) for filter chips in the UI. If the user imported Instagram Collections, their custom collection names are preserved as additional user-defined categories.
 - **F2.9 — Item lifecycle states.** Each item has one of these states:
@@ -341,7 +342,7 @@ Instagram Settings → Accounts Center → Your information and permissions → 
 
 - **F8.10 — Dead-link handling.** If the extractor later fails on a URL (creator deleted their reel), the item is marked `source_gone` and remains searchable via caption/hashtags/creator, but flagged in the UI ("Original no longer available").
 
-- **F8.11 — Instagram rate-limit courtesy.** For items in the "queued for full processing" tier, extractor calls are throttled to 20 items/hour per user to avoid tripping Instagram's anti-bot rate limits on Cobalt/yt-dlp.
+- **F8.11 — Instagram rate-limit courtesy.** For items in the "queued for full processing" tier, extractor calls are throttled to 20 items/hour per user to avoid tripping Instagram's anti-bot rate limits on scraper vendors/yt-dlp.
 
 - **F8.12 — Selective bulk enhance.** Even after import, user can tap "Enhance all text-indexed items in [Collection X]" to send an entire collection through full multimodal processing at their discretion. Progress screen + throttled queue.
 
@@ -489,7 +490,7 @@ Push "Couldn't save that reel" → tap → app opens on the failed item detail �
 
 - Gemini API availability and pricing remain within 30% of Sept 2026 published rates.
 - Supabase Postgres (pgvector) SLO holds; similarity is a local index lookup with no external dependency to degrade.
-- Cobalt self-hosted remains a functional extractor for IG/TikTok/X. If a platform hard-blocks it, we fall back to yt-dlp and log ingestion failures for reactive fixes.
+- Scraper vendors (ScrapeCreators/Apify) remain functional extractors for IG/TikTok. If a platform hard-blocks one provider, we fall back down the registry chain (TRD §12) and log ingestion failures for reactive fixes.
 - Instagram, TikTok, YouTube, and X do not fundamentally break their share-URL formats.
 - Meta's data export continues to include Caption + Hashtags + Owner fields for saved posts (verified against the user's Aug 2026 export). Parser is schema-tolerant if fields disappear.
 - App Store and Play Store approve the share-extension-based save flow (well-precedented — Pinterest, Raindrop, Pocket).

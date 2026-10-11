@@ -42,12 +42,12 @@ Phases are numbered 0–7. Phase 0 is setup and can start immediately. Phases 1�
 - Terraform for `dev` (local + minimal GCP) and `staging` environments.
 - **Supabase projects (staging + prod)** with Auth, Postgres (RLS enabled), and Storage buckets `media` + `exports` provisioned. Google + Apple + Email providers configured. New-format keys captured: `SUPABASE_URL`, `SUPABASE_PUBLISHABLE_KEY` (`sb_publishable_…`), `SUPABASE_SECRET_KEY` (`sb_secret_…`), plus `DATABASE_URL` (pooler `:6543`) and `DATABASE_URL_DIRECT` (`:5432`). JWT verification uses the public JWKS at `{SUPABASE_URL}/auth/v1/.well-known/jwks.json` — no shared JWT secret needed for new projects.
 - (No memory-vendor account needed — pgvector lives in Supabase Postgres.)
-- Gemini API key + Groq API key + Cobalt API key generated and stored in Secret Manager (staging).
+- Gemini API key + Groq API key generated and stored in Secret Manager (staging). Scraper keys (`SCRAPECREATORS_API_KEY` / `APIFY_API_TOKEN`) + `YOUTUBE_API_KEY` created as empty shells in TF; values added by hand only when paid paths are exercised.
 - Expo project initialized with EAS Build configured for iOS + Android.
 - FastAPI app skeleton with health endpoint deployed to Cloud Run staging.
-- GKE Autopilot cluster with Cobalt deployed (staging).
+- Egress verified from Cloud Shell with `apps/api/scripts/egress_check.py` (no extractor infra to deploy).
 - CI workflows for `mobile-ci`, `api-ci`, and Terraform plan.
-- Docker Compose local-dev setup that boots api + worker + local Postgres 15 (Supabase-compatible schema) + Cobalt.
+- Docker Compose local-dev setup that boots api + worker + local Postgres 15 (Supabase-compatible schema). No extractor container — scraper head runs `SCRAPER_PROVIDER=none` no-op locally.
 - Sentry projects (mobile + backend) linked.
 - PostHog project created; SDK wired into mobile app (event schema TBD).
 - Documentation: `README.md` at repo root with local dev instructions.
@@ -61,9 +61,9 @@ Phases are numbered 0–7. Phase 0 is setup and can start immediately. Phases 1�
 5. Wire Supabase project + JWT verification in FastAPI (`PyJWT` + `PyJWKClient` for asymmetric ES256 via the public JWKS endpoint; fallback branch for HS256 if `SUPABASE_LEGACY_JWT_SECRET` is set).
 6. Write `MemoryStore`, `Extractor`, `SummaryModel`, `TranscriptionModel` protocols as empty ABCs — no implementations yet.
 7. Add `apps/api/app/settings.py` with all env vars enumerated.
-8. Write Terraform modules: Cloud Run, Cloud SQL, GCS, Secret Manager, Cloud Tasks, VPC connector, GKE Autopilot for Cobalt.
+8. Write Terraform modules: Cloud Run, Secret Manager (incl. empty shells for `SCRAPECREATORS_API_KEY`, `APIFY_API_TOKEN`, `YOUTUBE_API_KEY`), Cloud Tasks. No extractor service, no NAT/proxy — default egress.
 9. Provision staging with Terraform. Deploy `apps/api/` skeleton to Cloud Run staging.
-10. Deploy Cobalt to GKE Autopilot staging.
+10. Run `apps/api/scripts/egress_check.py` from Cloud Shell against a per-platform URL corpus (metadata-only mode; `--full` burns Gemini tokens) and record the table.
 11. Add GitHub Actions workflows.
 12. Add `scripts/local-dev.sh` with docker-compose stack.
 13. Add Sentry + PostHog SDK bootstrapping (mobile + backend).
@@ -76,7 +76,7 @@ Phases are numbered 0–7. Phase 0 is setup and can start immediately. Phases 1�
 - ☐ Signing into a test Firebase account from the mobile app returns a valid ID token.
 - ☐ Backend accepts a signed token and rejects unsigned.
 - ☐ `terraform plan` on `staging` shows no drift.
-- ☐ Cobalt staging responds to a test download request.
+- ☐ `egress_check.py` from Cloud Shell completes over a per-platform URL corpus (per-URL failures are data — recorded error classes — not exit codes).
 - ☐ CI green on `main`.
 
 ### Risks / decisions to lock
@@ -99,7 +99,7 @@ Phases are numbered 0–7. Phase 0 is setup and can start immediately. Phases 1�
 
 - `POST /v1/saves` accepting a URL and returning `itemId`.
 - Cloud Tasks `ingest` queue and worker consuming it.
-- `Extractor` impls: Cobalt (primary), yt-dlp (fallback).
+- `Extractor` impls: scraper head (`ScraperApiExtractor`, `SCRAPER_PROVIDER=none` no-op locally), yt-dlp, gallery-dl; YouTube-native path (oEmbed + Data API v3 → Gemini URL input).
 - ffmpeg utilities for frame sampling, audio extract, thumbnail.
 - `SummaryModel` impl: Gemini (Flash-Lite default).
 - `MemoryStore` impl: pgvector (`PgVectorStore`).
@@ -110,7 +110,7 @@ Phases are numbered 0–7. Phase 0 is setup and can start immediately. Phases 1�
 
 ### Tasks
 
-1. Implement `services/extractors/cobalt.py` calling the staging Cobalt HTTP API. Cover Instagram Reels, TikTok, YouTube Shorts, X.
+1. Implement `services/extractors/scraper/` (ScrapeCreators REST + Apify run-sync behind `ScraperApiExtractor`, `SCRAPER_PROVIDER` switch) + YouTube-native path (oEmbed + Data API v3 guardrails → Gemini FileData URL input). Cover Instagram Reels, TikTok, YouTube Shorts, X per the registry chains (TRD §12).
 2. Implement `services/extractors/ytdlp.py` as fallback using the Python API.
 3. Implement `services/media/ffmpeg.py` — frame sampling and audio extraction to /tmp.
 4. Implement `services/llm/gemini.py` with `SummaryModel.summarize` for Flash-Lite. JSON-schema-validated output via Pydantic. One-retry-with-repair-prompt on invalid JSON.
@@ -134,13 +134,13 @@ Phases are numbered 0–7. Phase 0 is setup and can start immediately. Phases 1�
 - ☐ Tapping the answer's citation opens the item detail.
 - ☐ Deleting the item removes its embedding row within 5 s (verified by re-search returning no result).
 - ☐ Same flow works for TikTok, YouTube Shorts, X.
-- ☐ Extractor fallback: temporarily disable Cobalt for a test URL → yt-dlp handles it → item still lands `fully_indexed`.
+- ☐ Extractor fallback: set `SCRAPER_PROVIDER=none` (or revoke the test key to force `ProviderQuotaError`) → chain falls through to yt-dlp/gallery-dl → item still lands `fully_indexed`.
 - ☐ Test coverage ≥ 70% on backend, ≥ 60% on mobile.
 
 ### Risks / decisions to lock
 
 - Gemini Flash-Lite output quality on short reels — validate acceptable summary quality on a 20-URL manual eval before proceeding.
-- Cobalt reliability per platform — measure success rate against Instagram Reels specifically (highest volume expected).
+- Scraper-vendor reliability per platform — measure success + error-class rates (`SourceGoneError` vs quota vs transient) against Instagram Reels specifically (highest volume expected).
 - Set cost alarm at $5/day for Phase 1 while iterating.
 
 ---
@@ -374,7 +374,7 @@ Phases are numbered 0–7. Phase 0 is setup and can start immediately. Phases 1�
 - v1.0 EAS Build submitted via EAS Submit to both stores.
 - Prod GCP environment provisioned (mirror of staging via Terraform).
 - Prod Firebase project switched on with real Google + Apple OAuth clients.
-- Prod Cobalt cluster live in GKE.
+- Prod GCP environment provisioned (mirror of staging via Terraform). No extractor infra — egress re-verified with `egress_check.py`.
 - (No memory-vendor plan to size — capacity is Postgres storage + a Gemini embedding budget line.)
 - Prod DNS + Cloud CDN configured.
 - Post-launch monitoring dashboard published to a shared Slack channel.
@@ -384,7 +384,7 @@ Phases are numbered 0–7. Phase 0 is setup and can start immediately. Phases 1�
 
 1. Terraform apply `prod` environment.
 2. Configure prod Firebase project + OAuth consent screens.
-3. Provision prod Cobalt; run the pgvector migration on prod Postgres.
+3. Add scraper/YouTube secret VALUES by hand; run the pgvector migration on prod Postgres.
 4. Write App Store metadata (title, subtitle, keywords, description, screenshots).
 5. Write Play Store metadata + Data Safety form.
 6. Host privacy policy + terms on a simple static site (Firebase Hosting is fine).
@@ -493,7 +493,7 @@ Parallelizable with a second engineer: Phases 3 + 4 can run partially in paralle
 | 2026-09-10 | GCP + Firebase Auth | Fits Gemini quotas + auth already solved | Yes but expensive to switch |
 | 2026-09-30 | Replace Cognee Cloud with pgvector + Gemini embeddings | Nothing in the feature set uses graph extraction; plain cosine search over user-scoped rows suffices. Removes the $35/mo base plan + per-user memory cost; marginal embedding cost ≈ $0.003/user/mo. HNSW cosine index on vector(768) (Matryoshka-truncated from 3072). | Reversible in principle (MemoryStore interface kept) but pointless — nothing external to go back to. |
 | 2026-09-18 | Swap Firebase Auth + Cloud SQL + GCS → Supabase (Auth + Postgres + Storage) | Single vendor for stateful layer; RLS gives free per-user isolation at DB layer; $25/mo flat vs $70+/mo Cloud SQL minimum saves ~$60/mo pre-scale; GCP kept for Cloud Run + Cloud Tasks + GKE (Gemini latency, queue infra) | Reversible in principle but expensive — schema swap + auth-middleware rewrite. See TRD §9, §13.1, §15.3 for the new topology. |
-| 2026-09-10 | Cobalt self-hosted primary extractor | Purpose-built for social, no rate-limit dependency | Yes (behind Extractor) |
+| 2026-09-10 | ~~Cobalt self-hosted primary extractor~~ retired — scraper vendors (IG/TikTok) + YouTube-native + yt-dlp/gallery-dl fallbacks | Datacenter egress gets blocked by platform anti-bot; vendors absorb that per item; YouTube wants server-side URL input | Yes (behind Extractor; `SCRAPER_PROVIDER` + `YOUTUBE_NATIVE_ENABLED` switches) |
 | 2026-09-10 | No LinkedIn v1 | OSS extractors don't support; paid API deferred | v2 add-on |
 | 2026-09-10 | Freemium unlimited at launch | Prioritize adoption over monetization pre-scale | Revisit at 1–5 lakh users |
 | 2026-09-10 | Text-indexed default for > 30d IG imports | Cost containment while preserving searchability | Config toggle |

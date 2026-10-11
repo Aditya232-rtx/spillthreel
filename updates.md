@@ -102,7 +102,7 @@ Companion docs (contract-level, don't drift): [prd.md](./prd.md) · [trd.md](./t
 - **Cloud Tasks enqueue helper** (`app/tasks/enqueue.py`) — with in-process dispatcher for dev.
 - **Protocol interfaces**: `Extractor`, `MemoryStore`, `SummaryModel`, `TranscriptionModel` — empty ABCs, ready for Phase 1 implementations.
 - **Dockerfile** (multi-stage, non-root, distroless-adjacent).
-- **docker-compose.yml** — postgres + api + cobalt for local dev.
+- **docker-compose.yml** — postgres + api for local dev (no extractor container; scraper head is `SCRAPER_PROVIDER=none` no-op locally).
 - **`.env.example`** with inline docs for every var + SECRET vs public labels.
 - **`.env`** filled locally with real Supabase creds (gitignored).
 - **`pyproject.toml`** — full dep manifest with `worker` and `dev` extras.
@@ -123,9 +123,9 @@ Companion docs (contract-level, don't drift): [prd.md](./prd.md) · [trd.md](./t
 
 ### ✅ Done (Phase 1 core scaffolding — 2026-09-19)
 
-- **`services/extractors/cobalt.py`** — httpx client, streams from Cobalt tunnel URL to tmpfs.
+- **`services/extractors/scraper/`** — `ScraperApiExtractor` (ScrapeCreators REST + Apify run-sync actors `apify/instagram-scraper` / `clockworks/tiktok-scraper`, `SCRAPER_PROVIDER` switch); hardened downloader (https-only, DNS-pinned, `MEDIA_HOST_ALLOWLIST`, 100/20/20 MB caps); YouTube-native path (oEmbed + Data API v3 → Gemini FileData URL input, 600s cap, `YOUTUBE_NATIVE_ENABLED` escape hatch); canonical YouTube watch URLs + `is_shorts_url`.
 - **`services/extractors/ytdlp.py`** — lazy-imported yt-dlp, offloads to thread, captures uploader metadata.
-- **`services/extractors/registry.py`** — priority-ordered per-platform fallback (Cobalt → yt-dlp), distinguishes ExtractorError (walkable) from other exceptions (propagate).
+- **`services/extractors/registry.py`** — priority-ordered per-platform chains (IG [scraper→ytdlp→gallerydl], TikTok [scraper→ytdlp], X [ytdlp→gallerydl]; YouTube native, no registry), typed errors (`SourceGoneError`→`source_gone`, `ProviderQuotaError` never-gone fallthrough).
 - **`services/media/ffmpeg.py`** — probe, sample_frames (1/2s default, 1/10s long-form branch, scale-cap 720p), extract_audio (16kHz mono WAV for Whisper), make_thumbnail (720w JPEG at duration midpoint).
 - **`services/media/supabase_storage.py`** — upload/signed_url/delete via Storage REST API with apikey + service-role auth.
 - **`services/llm/gemini.py`** — SummaryModel with structured output (JSON schema), Flash-Lite default, temp 0.3, multimodal (frames + audio) or transcript-only.
@@ -161,7 +161,7 @@ Companion docs (contract-level, don't drift): [prd.md](./prd.md) · [trd.md](./t
 
 - Boot the local Python env (`uv sync` inside `apps/api/`) and run `uvicorn app.main:app --reload` for the first time.
 - Verify JWT auth end-to-end: mint a real Supabase session from mobile, call `/v1/health`, then `/v1/me` and see the auto-created profile row.
-- Wire real Cobalt on GKE (staging) once Phase 0 infra work starts.
+- Verify extractor chains end-to-end: scraper head with `SCRAPER_PROVIDER=none` falls through cleanly; paid paths verified via `egress_check.py` from Cloud Shell.
 
 ---
 
@@ -207,10 +207,9 @@ Companion docs (contract-level, don't drift): [prd.md](./prd.md) · [trd.md](./t
 
 ### 🔴 Missing (Phase 0 work still owing)
 
-- **Terraform modules** — Cloud Run (api + worker), Cloud Tasks, GKE Autopilot (Cobalt), Secret Manager, VPC, Cloud CDN. Nothing provisioned in GCP yet.
+- **Terraform modules** — Cloud Run (api + worker), Cloud Tasks, Secret Manager (incl. empty shells `SCRAPECREATORS_API_KEY` / `APIFY_API_TOKEN` / `YOUTUBE_API_KEY`), WIF. Nothing provisioned in GCP yet. No extractor service, no NAT/proxy (default egress).
+- **Self-hosted extractor dropped** — no GKE cluster, no self-hosted extractor manifests (retired; see TRD §22).
 - **GCP project + billing** — need to be set up.
-- **GKE Autopilot cluster** for Cobalt.
-- **Cobalt self-hosted deployment manifests** (`infra/cobalt/`).
 - **CI workflows** (`.github/workflows/`) — mobile-ci, mobile-release, api-ci, api-deploy-staging, api-deploy-prod, infra.
 - **EAS Build + Submit configs** — profile production + preview, iOS/Android bundle IDs verified.
 - **Apple Developer + Google Play Console** accounts (admin-side setup outside the repo).
@@ -269,7 +268,7 @@ In priority order. Session should pick up here:
 1. **Build search RAG loop** — `services/search/retriever.py`, `services/search/answerer.py`, `/v1/search` endpoint (chat UI is ready with stub replies + history).
 2. **Build IG import pipeline** (Phase 2) — parser exists (`ig_parser.py` + `taxonomy.py` + corpus tests); still missing `ig_pipeline.py`, `/v1/import/instagram` upload + `/v1/import/{id}` progress endpoints, throttled enhance queue.
 3. **Remaining Phase 1 endpoints** — `/v1/events` SSE, `/enhance`, `/retry`, `/notifications/token`, `gallerydl.py`.
-4. **Manual smoke test** — POST to `/v1/saves` with a real IG reel URL; watch ingestion end-to-end (Cobalt → ffmpeg → Gemini → pgvector → thumbnail → `fully_indexed`).
+4. **Manual smoke test** — POST to `/v1/saves` with a real IG reel URL; watch ingestion end-to-end (scraper/yt-dlp → ffmpeg → Gemini → pgvector → thumbnail → `fully_indexed`). Paid paths pre-verified via `egress_check.py` from Cloud Shell.
 5. **Share-sheet native wiring** (PRD F1) + TestFlight external build to validate the pattern early.
 6. **Apple provider** — Services ID + p8 key → Supabase dashboard; then native-Apple test on a real iOS device.
 7. **Observability** — OTel spans, Cloud Monitoring metrics, alert policies (TRD §17).
