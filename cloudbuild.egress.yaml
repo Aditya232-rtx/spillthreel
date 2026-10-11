@@ -1,0 +1,24 @@
+# Cloud Shell-equivalent egress probe on Google network (datacenter IPs).
+# Runs the Bright Data matrix through scripts/egress_check.py. Keys arrive
+# via Secret Manager (never in build logs). No images built or pushed.
+steps:
+- name: 'python:3.12-slim'
+  dir: 'apps/api'
+  entrypoint: 'sh'
+  args:
+  - '-c'
+  - |
+    pip install -q uv \
+    && uv sync --frozen --extra worker \
+    && printf 'https://www.instagram.com/p/DeKutClkfbd/\nhttps://www.instagram.com/reel/DdRsROrSNjr/\nhttps://www.instagram.com/reel/DeUIH95TNUJ/\nhttps://www.youtube.com/shorts/jNQXAC9IVRw\n' > /tmp/urls.txt \
+    && uv run python scripts/egress_check.py /tmp/urls.txt --provider brightdata --timeout 150
+  env:
+  - 'SCRAPER_PROVIDER=brightdata'
+  - 'SUPABASE_URL=https://txwueqvzftiftmmfyeqt.supabase.co'
+  secretEnv:
+  - 'BRIGHTDATA_API_TOKEN'
+availableSecrets:
+  secretManager:
+  - versionName: projects/spillthereel/secrets/BRIGHTDATA_API_TOKEN/versions/latest
+    env: 'BRIGHTDATA_API_TOKEN'
+timeout: '600s'
