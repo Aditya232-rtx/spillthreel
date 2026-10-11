@@ -11,7 +11,7 @@ installs via frozen sync; the api process never imports it, so there is
 no import at all here (not even a deferred one) and api boot pays nothing.
 
 Fallback position: registered LAST on instagram + x (TRD §12.3 — IG
-carousels, X image threads). Video stays with Cobalt/yt-dlp by chain
+carousels, X image threads). Video stays with yt-dlp by chain
 order: a video URL either succeeds upstream or fails there first, so it
 never reaches us in the healthy case. URL-path sniffing (/p/ vs /reel/)
 is deliberately NOT used — an IG /p/ post can itself hold a video — so
@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import shutil
 import tempfile
 from datetime import UTC, datetime
@@ -58,11 +59,43 @@ _MAX_IMAGES = 10
 _IMAGE_SUFFIXES = frozenset({".jpg", ".jpeg", ".png", ".webp"})
 
 # Seen when a video URL falls all the way through to us — detected so we
-# can refuse to mislabel video as image (video belongs to Cobalt/yt-dlp).
+# can refuse to mislabel video as image (video belongs to yt-dlp).
 _VIDEO_SUFFIXES = frozenset({".mp4", ".webm", ".mkv", ".mov", ".m4a", ".mp3", ".wav"})
 
 # Enough stderr to debug (HTTP status, extractor name) without flooding logs.
 _STDERR_TAIL_CHARS = 500
+
+
+def _outbound_proxy() -> str | None:
+    """Egress proxy URL when configured, else None.
+
+    Env ``OUTBOUND_PROXY_URL`` first, then settings ``outbound_proxy_url``
+    (same precedence as the Part D scraper providers). Never logged — the
+    URL may embed `user:pass@` credentials.
+    """
+    raw = os.environ.get("OUTBOUND_PROXY_URL", "").strip()
+    if raw:
+        return raw
+    try:
+        from app.settings import get_settings
+
+        value = getattr(get_settings(), "outbound_proxy_url", None)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    except Exception:
+        pass
+    return None
+
+
+def _proxy_args() -> list[str]:
+    """CLI fragment for proxying, or [] when direct egress.
+
+    gallery-dl documents `--proxy URL` under Networking Options. Callers
+    splice this immediately before the URL so flag-position-sensitive
+    assertions (and gallery-dl's own parsing) keep working.
+    """
+    proxy = _outbound_proxy()
+    return ["--proxy", proxy] if proxy else []
 
 
 class GalleryDlExtractor:
@@ -74,7 +107,7 @@ class GalleryDlExtractor:
     async def can_handle(self, url: str) -> bool:
         # Registry scopes us to instagram + x (the image-post platforms,
         # TRD §12.3) and tries us last, so video never reaches us while
-        # Cobalt/yt-dlp are healthy. Trust the dispatch like the other
+        # yt-dlp is healthy. Trust the dispatch like the other
         # extractors do — no URL-path sniffing (see module docstring).
         return self.platform in ("instagram", "x")
 
@@ -82,19 +115,25 @@ class GalleryDlExtractor:
         redacted = _redact_url(url)
 
         metadata_out, _ = await _run_gallery_dl(
-            ["--dump-json", "--range", f"1-{_MAX_IMAGES}", url],
+            ["--dump-json", "--range", f"1-{_MAX_IMAGES}", *_proxy_args(), url],
             timeout=_TIMEOUT_SECONDS,
             redacted_url=redacted,
         )
         caption, owner = _parse_metadata(metadata_out)
 
-        # Pipeline owns deletion of returned paths (TRD §15.7, same as
-        # cobalt's _download_to_tmp); on any failure below we clean up
+        # Pipeline owns deletion of returned paths (TRD §15.7); on any failure below we clean up
         # the tmpdir ourselves so failed items leak nothing.
         tmp_dir = Path(tempfile.mkdtemp(prefix="spillthereel-gallerydl-"))
         try:
             _, dl_stderr = await _run_gallery_dl(
-                ["--destination", str(tmp_dir), "--range", f"1-{_MAX_IMAGES}", url],
+                [
+                    "--destination",
+                    str(tmp_dir),
+                    "--range",
+                    f"1-{_MAX_IMAGES}",
+                    *_proxy_args(),
+                    url,
+                ],
                 timeout=_TIMEOUT_SECONDS,
                 redacted_url=redacted,
             )
@@ -235,7 +274,7 @@ def _raise_no_images(tmp_dir: Path, stderr: bytes, redacted_url: str) -> NoRetur
     if videos:
         raise ExtractorError(
             f"gallery-dl returned video-only content for {redacted_url} "
-            f"({len(videos)} video file(s)); leaving video to Cobalt/yt-dlp"
+            f"({len(videos)} video file(s)); leaving video to yt-dlp"
         )
     tail = stderr.decode("utf-8", "replace")[-_STDERR_TAIL_CHARS:]
     raise ExtractorError(f"gallery-dl downloaded no images for {redacted_url}: {tail}")

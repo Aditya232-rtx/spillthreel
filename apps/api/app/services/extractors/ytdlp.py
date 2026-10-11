@@ -1,4 +1,4 @@
-"""yt-dlp extractor — fallback path when Cobalt returns an error.
+"""yt-dlp extractor — primary video path for IG Reels, TikTok, YT Shorts, X.
 
 Invoked in-process via yt-dlp's Python API (not subprocess) — a shell
 fork per save adds ~50ms and yt-dlp is happy to be embedded. Cookies
@@ -7,12 +7,13 @@ Manager later (TRD §12.2).
 
 yt-dlp lands metadata (uploader, title, description, duration) as a
 side-effect of the download — we capture what we can into ExtractResult
-so downstream stages get a richer picture than Cobalt alone provides.
+so downstream stages get uploader, duration, and caption alongside media.
 """
 
 from __future__ import annotations
 
 import asyncio
+import os
 import tempfile
 from datetime import UTC, datetime
 from pathlib import Path
@@ -43,6 +44,28 @@ def _lazy_import_ytdlp() -> Any:
     return _yt_dlp
 
 
+def _outbound_proxy() -> str | None:
+    """Egress proxy URL when configured, else None.
+
+    Env ``OUTBOUND_PROXY_URL`` first, then settings ``outbound_proxy_url``
+    (same precedence as the Part D scraper providers). The value is only
+    ever passed to yt-dlp's ``proxy`` option — never logged (it may embed
+    `user:pass@` credentials).
+    """
+    raw = os.environ.get("OUTBOUND_PROXY_URL", "").strip()
+    if raw:
+        return raw
+    try:
+        from app.settings import get_settings
+
+        value = getattr(get_settings(), "outbound_proxy_url", None)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    except Exception:
+        pass
+    return None
+
+
 class YtDlpExtractor:
     """Extractor Protocol impl."""
 
@@ -71,6 +94,9 @@ class YtDlpExtractor:
             "nocheckcertificate": False,
             "socket_timeout": 30,
         }
+        proxy = _outbound_proxy()
+        if proxy:
+            ydl_opts["proxy"] = proxy
 
         # yt-dlp is synchronous — offload to a thread so we don't block
         # the event loop for the ~5-30s a download can take.

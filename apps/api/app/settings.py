@@ -97,9 +97,52 @@ class Settings(BaseSettings):
         description="Cloud Run worker service URL — Cloud Tasks POSTs here",
     )
 
-    # ---------------- Extractors ----------------
-    cobalt_base_url: str | None = None
-    cobalt_api_key: str | None = None
+    # ---------------- Media downloader (Part C) ----------------
+    # SSRF allowlist + per-kind size caps + timeouts for
+    # services/media/download.py. The downloader also honors
+    # MEDIA_HOST_ALLOWLIST / MEDIA_MAX_*_MB / MEDIA_CONNECT_TIMEOUT_S env
+    # vars as fallback; empty settings values fall through to env, then
+    # to the module defaults.
+    media_host_allowlist: str = (
+        "cdninstagram.com,fbcdn.net,"
+        "tiktokcdn.com,tiktokcdn-us.com,byteoversea.com,muscdn.com,"
+        "tiktokv.com,googlevideo.com,ytimg.com,youtube.com,youtu.be,"
+        "ggpht.com,twimg.com"
+    )
+    media_max_video_mb: float = 100.0
+    media_max_image_mb: float = 20.0
+    media_max_audio_mb: float = 20.0
+    media_connect_timeout_s: float = 10.0
+    # Read/idle timeout for media fetches. download_media() takes it as
+    # the `timeout_s` param (default 60.0); this field is the documented
+    # home for the value when callers want it centralized.
+    media_read_timeout_s: float = 60.0
+
+    # ---------------- Paid scraper providers (Part D) ----------------
+    # SCRAPER_PROVIDER=none (default) is boot-safe: the scraper head
+    # degrades to can_handle False with zero paid calls. Set to
+    # "scrapecreators" | "apify" to enable the paid head on IG/TikTok.
+    scraper_provider: str = "none"
+    scrapecreators_api_key: str | None = None
+    scrapecreators_base_url: str = "https://api.scrapecreators.com"
+    apify_token: str | None = None
+    apify_base_url: str = "https://api.apify.com"
+    apify_ig_actor: str = "apify/instagram-scraper"
+    apify_tiktok_actor: str = "clockworks/tiktok-scraper"
+    scraper_max_concurrency: int = 4
+    scraper_cost_per_1k_usd: str = ""
+    # Egress proxy for paid-provider API calls (scrapecreators/apify).
+    # Deliberately NOT honored by services/media/download.py: that
+    # downloader pins DNS per-hop as its DNS-rebinding defense, which is
+    # incompatible with proxying — it egresses direct to allowlisted
+    # CDN hosts only.
+    outbound_proxy_url: str | None = None
+
+    # ---------------- YouTube native ingest (Part E) ----------------
+    youtube_api_key: str | None = None
+    youtube_native_enabled: bool = True
+    youtube_max_duration_seconds: float = 600.0
+    youtube_gemini_media_resolution: str = "MEDIA_RESOLUTION_LOW"
 
     # ---------------- LLM providers ----------------
     gemini_api_key: str | None = None
