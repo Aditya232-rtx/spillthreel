@@ -1,6 +1,6 @@
 """Unit tests for the extractor registry's fallback + error behavior.
 
-Uses fake Extractor Protocol impls so we don't hit Cobalt or spawn
+Uses fake Extractor Protocol impls so we don't hit the network or spawn
 yt-dlp. The key contract we're testing: first extractor that returns
 without raising wins; ExtractorError skips to the next; anything else
 propagates up.

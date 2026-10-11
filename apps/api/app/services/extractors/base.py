@@ -1,7 +1,7 @@
 """Extractor protocol — the swappable interface for media extraction.
 
-Implementations: cobalt.py (primary), ytdlp.py (fallback), gallerydl.py
-(image content). All live behind this Protocol so the ingestion pipeline
+Implementations: ytdlp.py (video), gallerydl.py (image content).
+All live behind this Protocol so the ingestion pipeline
 never imports a concrete extractor directly.
 """
 
