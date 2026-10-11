@@ -11,6 +11,7 @@ Cost per short reel (≤90s) at Flash-Lite: ~$0.008-$0.015. TRD §7.5.
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 from typing import Any
 
@@ -124,16 +125,7 @@ class GeminiSummaryModel:
         if not text:
             raise RuntimeError("gemini returned empty response")
 
-        try:
-            payload = json.loads(text)
-        except json.JSONDecodeError as e:
-            # Schema-mode almost never violates — but if it does, one
-            # cheap retry with a repair prompt (PRD F2.5) is worth the
-            # $0.001 to save the item.
-            _logger.warning("gemini.json_decode_failed", err=str(e), body=text[:200])
-            raise
-
-        summary = StructuredSummary.model_validate(payload)
+        summary = _structured_summary_from_text(text)
         _logger.info(
             "llm.gemini.summarized",
             model=self._model,
@@ -141,6 +133,153 @@ class GeminiSummaryModel:
             title=summary.title[:60],
         )
         return summary
+
+    async def summarize_youtube(
+        self,
+        url: str,
+        *,
+        title: str | None = None,
+        channel: str | None = None,
+        description: str | None = None,
+        duration_seconds: float | None = None,
+    ) -> StructuredSummary:
+        """Summarize a PUBLIC YouTube video without downloading it.
+
+        Per the current video-understanding docs, a public YouTube URL is
+        passed as a FileData video part (``file_uri`` = the watch URL, no
+        bytes, no MIME type)::
+
+            Part(file_data=FileData(file_uri="https://www.youtube.com/watch?v=..."))
+
+        Constraints from the docs: the video MUST be public, max ONE
+        YouTube URL per request. Same system prompt + response schema as
+        :meth:`summarize`, so the returned StructuredSummary is identical
+        in shape. Media resolution defaults to LOW (cost/latency) via
+        ``YOUTUBE_GEMINI_MEDIA_RESOLUTION``.
+        """
+        from google import genai
+        from google.genai import types as genai_types
+
+        settings = get_settings()
+        if not settings.gemini_api_key:
+            raise RuntimeError("gemini_api_key not configured")
+
+        client = genai.Client(api_key=settings.gemini_api_key)
+
+        parts: list[Any] = [
+            genai_types.Part.from_text(text=_SYSTEM_PROMPT),
+            genai_types.Part(file_data=genai_types.FileData(file_uri=url)),
+        ]
+        hints = [
+            line
+            for line in (
+                f"Known title: {title}" if title else "",
+                f"Known channel: {channel}" if channel else "",
+                f"Known description: {description[:2000]}" if description else "",
+                f"Known duration: {duration_seconds:.0f}s" if duration_seconds else "",
+            )
+            if line
+        ]
+        if hints:
+            parts.append(
+                genai_types.Part.from_text(
+                    text=(
+                        "Known metadata about this video (hints only — "
+                        "the video itself is the source of truth):\n" + "\n".join(hints)
+                    )
+                )
+            )
+
+        base_config: dict[str, Any] = {
+            "response_mime_type": "application/json",
+            "response_schema": _SUMMARY_SCHEMA,
+            "temperature": 0.3,
+            "max_output_tokens": 8192,
+        }
+        resolution = _youtube_media_resolution()
+        try:
+            if resolution:
+                config = genai_types.GenerateContentConfig(
+                    media_resolution=resolution, **base_config
+                )
+            else:
+                config = genai_types.GenerateContentConfig(**base_config)
+        except TypeError:
+            # Older google-genai SDKs predate the media_resolution field —
+            # fall back to defaults rather than failing the item.
+            _logger.warning("llm.gemini.no_media_resolution_support")
+            config = genai_types.GenerateContentConfig(**base_config)
+
+        response = await client.aio.models.generate_content(
+            model=self._model,
+            contents=parts,
+            config=config,
+        )
+
+        text = response.text
+        if not text:
+            raise RuntimeError("gemini returned empty response")
+
+        summary = _structured_summary_from_text(text)
+        _logger.info(
+            "llm.gemini.summarized_youtube",
+            model=self._model,
+            url=url,
+            resolution=resolution,
+            title=summary.title[:60],
+        )
+        return summary
+
+
+def _structured_summary_from_text(text: str) -> StructuredSummary:
+    """Parse a schema-mode JSON response into a StructuredSummary.
+
+    Shared by summarize() and summarize_youtube() — both use the same
+    prompt + schema, so the payload shape is identical.
+    """
+    try:
+        payload = json.loads(text)
+    except json.JSONDecodeError as e:
+        # Schema-mode almost never violates — but if it does, one
+        # cheap retry with a repair prompt (PRD F2.5) is worth the
+        # $0.001 to save the item.
+        _logger.warning("gemini.json_decode_failed", err=str(e), body=text[:200])
+        raise
+    return StructuredSummary.model_validate(payload)
+
+
+_YOUTUBE_RESOLUTION_ALIASES = {
+    "LOW": "MEDIA_RESOLUTION_LOW",
+    "MEDIA_RESOLUTION_LOW": "MEDIA_RESOLUTION_LOW",
+    "MEDIUM": "MEDIA_RESOLUTION_MEDIUM",
+    "MEDIA_RESOLUTION_MEDIUM": "MEDIA_RESOLUTION_MEDIUM",
+    "HIGH": "MEDIA_RESOLUTION_HIGH",
+    "MEDIA_RESOLUTION_HIGH": "MEDIA_RESOLUTION_HIGH",
+    "UNSPECIFIED": "MEDIA_RESOLUTION_UNSPECIFIED",
+    "MEDIA_RESOLUTION_UNSPECIFIED": "MEDIA_RESOLUTION_UNSPECIFIED",
+}
+
+
+def _youtube_media_resolution() -> str | None:
+    """Resolve the media-resolution setting for YouTube native calls.
+
+    Backed by settings ``youtube_gemini_media_resolution`` (env
+    ``YOUTUBE_GEMINI_MEDIA_RESOLUTION``). LOW by default: ~64 tokens/frame on
+    Gemini 2.5 (~100 tok/s incl. audio) vs 256/frame at MEDIUM/HIGH
+    (~300 tok/s). Accepts ``low``/``medium``/``high``/``unspecified``
+    (case-insensitive) or the full ``MEDIA_RESOLUTION_*`` enum names.
+    """
+    settings = get_settings()
+    raw = getattr(settings, "youtube_gemini_media_resolution", None)
+    if raw is None:
+        raw = os.getenv("YOUTUBE_GEMINI_MEDIA_RESOLUTION", "MEDIA_RESOLUTION_LOW")
+    resolved = _YOUTUBE_RESOLUTION_ALIASES.get(str(raw).strip().upper())
+    if resolved is None:
+        _logger.warning("llm.gemini.unknown_media_resolution", raw=str(raw))
+        return "MEDIA_RESOLUTION_LOW"
+    if resolved == "MEDIA_RESOLUTION_UNSPECIFIED":
+        return None
+    return resolved
 
 
 def _part_from_image(path: Path) -> Any:

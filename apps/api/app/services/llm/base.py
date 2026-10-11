@@ -65,6 +65,23 @@ class SummaryModel(Protocol):
         transcript: str | None,
     ) -> StructuredSummary: ...
 
+    async def summarize_youtube(
+        self,
+        url: str,
+        *,
+        title: str | None = None,
+        channel: str | None = None,
+        description: str | None = None,
+        duration_seconds: float | None = None,
+    ) -> StructuredSummary:
+        """Summarize a PUBLIC YouTube video natively (no download).
+
+        The implementation passes the public watch URL to Gemini as a
+        FileData video part. Hints are oEmbed / Data API metadata used
+        to ground the model — the video itself is the source of truth.
+        """
+        ...
+
 
 class TranscriptionModel(Protocol):
     async def transcribe(self, audio: AudioTrack) -> str: ...
