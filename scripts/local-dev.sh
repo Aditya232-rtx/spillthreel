@@ -58,7 +58,6 @@ for _ in $(seq 1 60); do
     echo ""
     echo "API:      http://localhost:8000  (docs: http://localhost:8000/docs)"
     echo "Health:   http://localhost:8000/health"
-    echo "Cobalt:   http://localhost:9000"
     echo "Postgres: localhost:5432 (user spill / db spillthereel)"
     echo "Mobile:   cd apps/mobile && npx expo start"
     exit 0

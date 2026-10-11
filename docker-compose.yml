@@ -44,8 +44,6 @@ services:
       SUPABASE_BUCKET_MEDIA: ${SUPABASE_BUCKET_MEDIA:-media}
       SUPABASE_BUCKET_EXPORTS: ${SUPABASE_BUCKET_EXPORTS:-exports}
       # --- Extractors / LLM / memory (empty = code paths that need them fail loudly) ---
-      COBALT_BASE_URL: http://cobalt:9000
-      COBALT_API_KEY: ${COBALT_API_KEY:-}
       GEMINI_API_KEY: ${GEMINI_API_KEY:-}
       GROQ_API_KEY: ${GROQ_API_KEY:-}
       # --- Observability / guards ---
@@ -87,8 +85,6 @@ services:
       SUPABASE_BUCKET_MEDIA: ${SUPABASE_BUCKET_MEDIA:-media}
       SUPABASE_BUCKET_EXPORTS: ${SUPABASE_BUCKET_EXPORTS:-exports}
       # --- Extractors / LLM / memory (empty = code paths that need them fail loudly) ---
-      COBALT_BASE_URL: http://cobalt:9000
-      COBALT_API_KEY: ${COBALT_API_KEY:-}
       GEMINI_API_KEY: ${GEMINI_API_KEY:-}
       GROQ_API_KEY: ${GROQ_API_KEY:-}
       # --- Observability / guards ---
@@ -107,17 +103,7 @@ services:
       - ./apps/api:/app:cached
     command: >
       sh -c "alembic upgrade head &&
-             uvicorn app.worker:app --host 0.0.0.0 --port 8001 --reload"
-
-  cobalt:
-    # Upstream image, unmodified — TRD §12.1.
-    image: ghcr.io/imputnet/cobalt:10
-    environment:
-      API_URL: http://localhost:9000/
-      API_PORT: 9000
-    ports:
-      - "9000:9000"
-    restart: unless-stopped
+              uvicorn app.worker:app --host 0.0.0.0 --port 8001 --reload"
 
 volumes:
   pg_data:

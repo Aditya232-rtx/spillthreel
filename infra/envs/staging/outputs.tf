@@ -9,12 +9,6 @@ output "worker_url" {
   sensitive   = true
 }
 
-output "cobalt_url" {
-  value       = module.cobalt.url
-  description = "Staging Cobalt extractor URL (COBALT_BASE_URL for workers)."
-  sensitive   = true
-}
-
 output "wif_provider" {
   value       = module.github_wif.provider_name
   description = "Set as repo variable GCP_WIF_PROVIDER for CI plans."

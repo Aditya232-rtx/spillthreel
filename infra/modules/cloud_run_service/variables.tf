@@ -10,7 +10,7 @@ variable "region" {
 
 variable "service_name" {
   type        = string
-  description = "Cloud Run service name (api, worker, cobalt)."
+  description = "Cloud Run service name (api, worker)."
 }
 
 variable "image" {
@@ -51,7 +51,7 @@ variable "concurrency" {
 variable "container_port" {
   type        = number
   default     = 8080
-  description = "Container listening port (9000 for Cobalt)."
+  description = "Container listening port."
 }
 
 variable "service_account_email" {
@@ -90,5 +90,5 @@ variable "secret_volumes" {
     file_name  = string
   }))
   default     = {}
-  description = "Secret Manager secrets mounted as files (e.g. Cobalt's keys.json). Key = volume name."
+  description = "Secret Manager secrets mounted as files. Key = volume name."
 }
