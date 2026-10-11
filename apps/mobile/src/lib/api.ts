@@ -177,3 +177,53 @@ export function search(
     opts?.signal ? { signal: opts.signal } : undefined,
   );
 }
+
+/**
+ * GET /v1/items/{id} — item detail.
+ *
+ * Contract (apps/api/app/api/v1/items.py `ItemDetail`): ItemSummary fields
+ * (id, source_url, platform, state, saved_at, title?, summary?,
+ * thumbnail_url?, owner_username?) plus transcript?, on_screen_text?,
+ * caption?, hashtags[], owner_name?, owner_url?, duration_seconds?,
+ * failure_reason?. No categories array — use hashtags[] for key chips.
+ * Other-user or deleted ids surface as ApiError 404.
+ */
+export interface ItemDetail {
+  id: string;
+  source_url: string;
+  platform: string;
+  state: string;
+  saved_at: string;
+  title: string | null;
+  summary: string | null;
+  thumbnail_url: string | null;
+  owner_username: string | null;
+  transcript: string | null;
+  on_screen_text: string | null;
+  caption: string | null;
+  hashtags: string[];
+  owner_name: string | null;
+  owner_url: string | null;
+  duration_seconds: number | null;
+  failure_reason: string | null;
+}
+
+export function getItem(id: string): Promise<ItemDetail> {
+  return api.get<ItemDetail>(`/v1/items/${encodeURIComponent(id)}`);
+}
+
+/**
+ * POST /v1/items/{id}/retry — re-queue a failed item for ingestion.
+ *
+ * Allowed from `failed` only (422 otherwise); already-`queued` is an
+ * idempotent no-op. Returns the new state; callers should re-fetch
+ * getItem() to refresh the detail view.
+ */
+export interface ItemActionResponse {
+  item_id: string;
+  state: string;
+}
+
+export function retryItem(id: string): Promise<ItemActionResponse> {
+  return api.post<ItemActionResponse>(`/v1/items/${encodeURIComponent(id)}/retry`, {});
+}
