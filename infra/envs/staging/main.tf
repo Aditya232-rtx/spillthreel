@@ -29,6 +29,7 @@ locals {
     "GROQ_API_KEY",
     "SCRAPECREATORS_API_KEY",
     "APIFY_API_TOKEN",
+    "BRIGHTDATA_API_TOKEN",
     "YOUTUBE_API_KEY",
     "SENTRY_DSN",
   ]
@@ -67,6 +68,7 @@ locals {
   worker_secret_env = merge(local.secret_env, {
     SCRAPECREATORS_API_KEY = "SCRAPECREATORS_API_KEY"
     APIFY_API_TOKEN        = "APIFY_API_TOKEN"
+    BRIGHTDATA_API_TOKEN   = "BRIGHTDATA_API_TOKEN"
     YOUTUBE_API_KEY        = "YOUTUBE_API_KEY"
   })
 }
