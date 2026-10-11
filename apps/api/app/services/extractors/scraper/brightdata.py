@@ -1,22 +1,25 @@
-"""Bright Data provider — async trigger → poll → download (Part D).
+"""Bright Data provider — sync /scrape first, trigger → poll → download fallback.
 
 Vendor truth (read 2026-10-11):
 * Base ``https://api.brightdata.com``, auth header
   ``Authorization: Bearer <API key>`` (key minted at
   https://brightdata.com/cp/setting/users).
   Docs: https://docs.brightdata.com/api-reference/authentication
-* Flow choice: trigger + poll + download INSIDE ``fetch()`` with a bounded
-  poll budget (``_POLL_BUDGET_S`` 90s, ``_POLL_INTERVAL_S`` 3s). The sync
-  ``POST /datasets/v3/scrape`` alternative returns records directly on 200
-  but answers 202 + ``snapshot_id`` past its 1-minute timeout — i.e. the
-  same poll loop is required anyway.
+* Flow choice: sync ``POST /datasets/v3/scrape`` FIRST (body
+  ``{"input": [{"url": <post URL>}], "limit_per_input": null}``,
+  ``?dataset_id=...&notify=false&include_errors=true``) — returns the
+  record directly on 200 and answers 202 + ``snapshot_id`` past its
+  1-minute timeout (then the same poll loop runs). Observed live:
+  an account where ``/trigger`` answers 400 "Customer is not active"
+  while ``/scrape`` 200s, so trigger CANNOT be the primary path.
   Docs: https://docs.brightdata.com/api-reference/scrapers/synchronous-requests
-  (202 fallback + retry-after) vs
-  https://docs.brightdata.com/api-reference/scrapers/asynchronous-requests
-  (``POST /datasets/v3/trigger`` → ``snapshot_id``).
-  Trigger + poll is the documented bulk path and keeps worker latency
-  predictable; poll-budget exhaustion maps to transient ExtractorError
-  (registry falls through), NEVER to SourceGoneError.
+* Fallback: ``POST /datasets/v3/trigger`` → poll → download INSIDE
+  ``fetch()`` with a bounded poll budget (``_POLL_BUDGET_S`` 90s,
+  ``_POLL_INTERVAL_S`` 3s), used when /scrape is throttled (429),
+  errors 5xx, or answers an unmapped shape.
+  Docs: https://docs.brightdata.com/api-reference/scrapers/asynchronous-requests
+* Poll-budget exhaustion maps to transient ExtractorError (registry falls
+  through), NEVER to SourceGoneError.
 * Trigger ``POST /datasets/v3/trigger?dataset_id=...&include_errors=true
   &format=json`` body ``{"input": [{"url": <post URL>]}`` → 200
   ``{"snapshot_id": "..."}``.
@@ -328,11 +331,88 @@ class BrightDataProvider:
                     est_cost_per_1k_usd=get_cost_per_1k_usd(),
                 )
 
+    async def _finish_ok(self, platform: Platform, records: Any, redacted: str) -> ScrapedPost:
+        post = (
+            _parse_instagram_records(records, redacted)
+            if platform == "instagram"
+            else _parse_tiktok_records(records, redacted)
+        )
+        _logger.info(
+            "scraper.call",
+            provider=self.name,
+            platform=platform,
+            status="ok",
+            latency_ms=0,
+            est_cost_per_1k_usd=get_cost_per_1k_usd(),
+        )
+        return post
+
     async def _fetch_with_retry(
         self, platform: Platform, dataset: str, url: str, token: str
     ) -> ScrapedPost:
         redacted = _redact(url)
         headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+        # Sync /scrape first (see module docstring): 200 → records, 202 →
+        # poll+download. Throttle/server/unmapped answers fall through to
+        # the trigger flow below, which has the full error taxonomy.
+        scrape_target = f"{_base_url()}/datasets/v3/scrape"
+        scrape_params = {
+            "dataset_id": dataset,
+            "notify": "false",
+            "include_errors": "true",
+        }
+        scrape_body: dict[str, Any] = {"input": [{"url": url}], "limit_per_input": None}
+        for attempt in (0, 1):
+            try:
+                async with _build_client() as client:
+                    resp = await client.post(
+                        scrape_target, params=scrape_params, headers=headers, json=scrape_body
+                    )
+            except (httpx.TimeoutException, httpx.ConnectError, httpx.NetworkError) as e:
+                if attempt == 0:
+                    await asyncio.sleep(random.uniform(0.2, 0.8))
+                    continue
+                raise ExtractorError(
+                    f"brightdata network failed for {redacted}: {type(e).__name__}"
+                ) from e
+            except httpx.HTTPError as e:
+                raise ExtractorError(
+                    f"brightdata request failed for {redacted}: {type(e).__name__}"
+                ) from e
+
+            if resp.status_code == 429:
+                if attempt == 0:
+                    await asyncio.sleep(_parse_retry_after(resp.headers.get("retry-after")))
+                    continue
+                break  # throttled twice → trigger flow decides
+            if resp.status_code in (401, 402, 403):
+                raise ProviderQuotaError(
+                    f"brightdata quota/auth (http {resp.status_code}) for {redacted}"
+                )
+            if resp.status_code == 404:
+                raise ExtractorError(f"brightdata dataset not found for {redacted}")
+            if 200 <= resp.status_code < 300:
+                try:
+                    scrape_payload: Any = resp.json()
+                except ValueError as e:
+                    raise ExtractorError(f"brightdata invalid scrape JSON for {redacted}") from e
+                if isinstance(scrape_payload, dict):
+                    sid = scrape_payload.get("snapshot_id")
+                    if isinstance(sid, str) and sid.strip():
+                        # Async answer past the sync timeout — reuse poll+download.
+                        await self._wait_ready(sid.strip(), redacted, headers)
+                        records = await self._download_snapshot(sid.strip(), redacted, headers)
+                        return await self._finish_ok(platform, records, redacted)
+                    return await self._finish_ok(platform, [scrape_payload], redacted)
+                if isinstance(scrape_payload, list):
+                    return await self._finish_ok(platform, scrape_payload, redacted)
+                break  # unexpected shape → trigger flow decides
+            if 500 <= resp.status_code <= 599:
+                if attempt == 0:
+                    await asyncio.sleep(random.uniform(0.2, 0.8))
+                    continue
+                break
+            break  # unmapped status → trigger flow decides
         body: dict[str, Any] = {"input": [{"url": url}]}
         trigger_target = f"{_base_url()}/datasets/v3/trigger"
         trigger_params = {
@@ -410,20 +490,7 @@ class BrightDataProvider:
 
         await self._wait_ready(snapshot_id, redacted, headers)
         records = await self._download_snapshot(snapshot_id, redacted, headers)
-        post = (
-            _parse_instagram_records(records, redacted)
-            if platform == "instagram"
-            else _parse_tiktok_records(records, redacted)
-        )
-        _logger.info(
-            "scraper.call",
-            provider=self.name,
-            platform=platform,
-            status="ok",
-            latency_ms=0,
-            est_cost_per_1k_usd=get_cost_per_1k_usd(),
-        )
-        return post
+        return await self._finish_ok(platform, records, redacted)
 
     async def _wait_ready(self, snapshot_id: str, redacted: str, headers: dict[str, str]) -> None:
         deadline = time.monotonic() + _POLL_BUDGET_S

@@ -55,6 +55,9 @@ def _route(
     progress_payload: Any | None = None,
     snapshot_status: int = 200,
     snapshot_payload: Any | None = None,
+    scrape_status: int = 429,
+    scrape_payload: Any | None = None,
+    scrape_headers: dict[str, str] | None = None,
     seen: list[httpx.Request] | None = None,
 ) -> Any:
     trigger_payload = {"snapshot_id": "s_test123"} if trigger_payload is None else trigger_payload
@@ -65,11 +68,19 @@ def _route(
     )
     if snapshot_payload is None:
         snapshot_payload = []
+    if scrape_payload is None:
+        scrape_payload = {"error": "throttled in test"}
+    if scrape_headers is None:
+        # Retry-After: 0 → instant fallback to trigger path, so existing
+        # trigger-path tests keep their meaning.
+        scrape_headers = {"retry-after": "0"}
 
     def _handler(req: httpx.Request) -> httpx.Response:
         if seen is not None:
             seen.append(req)
         path = req.url.path
+        if path.endswith("/datasets/v3/scrape"):
+            return _resp(scrape_status, scrape_payload, scrape_headers)
         if path.endswith("/datasets/v3/trigger"):
             return _resp(trigger_status, trigger_payload)
         if "/datasets/v3/progress/" in path:
@@ -179,6 +190,8 @@ class TestBrightDataInstagram:
 
         def _handler(req: httpx.Request) -> httpx.Response:
             path = req.url.path
+            if path.endswith("/datasets/v3/scrape"):
+                return _resp(429, {"error": "slow"}, {"retry-after": "0"})
             if path.endswith("/datasets/v3/trigger"):
                 calls["n"] += 1
                 if calls["n"] == 1:
@@ -212,6 +225,8 @@ class TestBrightDataInstagram:
         seen: list[str] = []
 
         def _handler(req: httpx.Request) -> httpx.Response:
+            if req.url.path.endswith("/datasets/v3/scrape"):
+                return _resp(429, {"error": "slow"}, {"retry-after": "0"})
             if req.url.path.endswith("/datasets/v3/trigger"):
                 if not seen:
                     seen.append("first")
@@ -294,6 +309,72 @@ class TestBrightDataInstagram:
                 "instagram", "https://www.instagram.com/reel/AbC123XyZ/"
             )
         assert "super-secret-token" not in str(exc.value)
+
+
+class TestBrightDataScrapeFirst:
+    async def test_scrape_200_dict_parsed_no_trigger(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        records = _load("ig_reel_video.json")
+        record = records[0] if isinstance(records, list) else records
+        seen: list[httpx.Request] = []
+        _mock_client(
+            monkeypatch,
+            bd_mod,
+            _route(scrape_status=200, scrape_payload=record, seen=seen),
+        )
+        _set_env(monkeypatch)
+        post = await BrightDataProvider().fetch(
+            "instagram", "https://www.instagram.com/reel/AbC123XyZ/"
+        )
+        assert post.media_type == "video"
+        assert post.video_url == "https://cdn.example.com/brightdata/ig_video123.mp4"
+        paths = [r.url.path for r in seen]
+        assert any(p.endswith("/datasets/v3/scrape") for p in paths)
+        assert not any(p.endswith("/datasets/v3/trigger") for p in paths)
+
+    async def test_scrape_202_snapshot_uses_poll(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        records = _load("ig_reel_video.json")
+        _mock_client(
+            monkeypatch,
+            bd_mod,
+            _route(
+                scrape_status=202,
+                scrape_payload={"snapshot_id": "s_sync123"},
+                progress_payload={"snapshot_id": "s_sync123", "status": "ready"},
+                snapshot_payload=records,
+            ),
+        )
+        _set_env(monkeypatch)
+        post = await BrightDataProvider().fetch(
+            "instagram", "https://www.instagram.com/reel/AbC123XyZ/"
+        )
+        assert post.media_type == "video"
+
+    async def test_scrape_401_is_quota_no_trigger(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        seen: list[httpx.Request] = []
+        _mock_client(
+            monkeypatch,
+            bd_mod,
+            _route(scrape_status=401, scrape_payload={"error": "unauthorized"}, seen=seen),
+        )
+        _set_env(monkeypatch)
+        with pytest.raises(ProviderQuotaError):
+            await BrightDataProvider().fetch(
+                "instagram", "https://www.instagram.com/reel/AbC123XyZ/"
+            )
+        assert not any(r.url.path.endswith("/datasets/v3/trigger") for r in seen)
+
+    async def test_scrape_404_is_transient_not_gone(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        _mock_client(
+            monkeypatch,
+            bd_mod,
+            _route(scrape_status=404, scrape_payload="Collector not found"),
+        )
+        _set_env(monkeypatch)
+        with pytest.raises(ExtractorError) as exc:
+            await BrightDataProvider().fetch(
+                "instagram", "https://www.instagram.com/reel/AbC123XyZ/"
+            )
+        assert not isinstance(exc.value, (SourceGoneError, ProviderQuotaError))
 
 
 class TestBrightDataTikTok:
