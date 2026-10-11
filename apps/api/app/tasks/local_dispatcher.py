@@ -35,11 +35,15 @@ async def dispatch_local(task_type: str, payload: dict[str, str | int | float]) 
         return
 
     if task_type == "import":
-        _logger.info(
-            "task.local.import_stub",
-            import_id=payload.get("import_id"),
-            note="IG import pipeline not yet implemented (Phase 2)",
-        )
+        from app.services.imports.ig_pipeline import process_stored_import
+
+        import_id = str(payload.get("import_id") or "")
+        user_id = str(payload.get("user_id") or "")
+        storage_key = str(payload.get("storage_key") or "")
+        if not import_id or not user_id or not storage_key:
+            _logger.warning("task.local.import_missing_fields", payload=payload)
+            return
+        await process_stored_import(import_id, user_id, storage_key)
         return
 
     if task_type == "delete_user":

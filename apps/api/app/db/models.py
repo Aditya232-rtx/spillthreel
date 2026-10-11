@@ -263,7 +263,7 @@ class Import(Base):
     )
     state: Mapped[str] = mapped_column(
         String, nullable=False
-    )  # 'parsing' | 'indexing' | 'complete' | 'failed'
+    )  # 'processing' | 'parsing' | 'indexing' | 'complete' | 'failed'
     total_parsed: Mapped[int] = mapped_column(Integer, server_default=text("0"), default=0)
     text_indexed_done: Mapped[int] = mapped_column(Integer, server_default=text("0"), default=0)
     full_queued: Mapped[int] = mapped_column(Integer, server_default=text("0"), default=0)

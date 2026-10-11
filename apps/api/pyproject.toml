@@ -32,6 +32,10 @@ dependencies = [
   "slowapi>=0.1.10",
   # Vector embeddings
   "pgvector>=0.2.0",
+  # IG export parser (BeautifulSoup HTML) — needed in the api image too:
+  # POST /v1/imports parses the upload inline before enqueueing.
+  "beautifulsoup4>=4.12",
+  "lxml>=5.3",
 ]
 
 [project.optional-dependencies]
@@ -42,9 +46,6 @@ worker = [
   # Media extraction (bundled in worker container only)
   "yt-dlp>=2026.8.19",
   "gallery-dl>=1.28",
-  # Parser
-  "beautifulsoup4>=4.12",
-  "lxml>=5.3",
   # GCP
   # google-auth is explicit (not just transitive via google-cloud-*):
   # app/tasks/worker_entry.py imports it directly for Cloud Tasks OIDC verification.

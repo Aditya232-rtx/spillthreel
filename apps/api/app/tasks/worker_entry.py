@@ -25,6 +25,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel
 
 from app.observability.logging import get_logger
+from app.services.imports.ig_pipeline import process_stored_import
 from app.services.ingest.enhance import enhance_item
 from app.services.ingest.pipeline import ingest_item
 from app.settings import Settings, get_settings
@@ -205,12 +206,49 @@ async def enhance_task(payload: IngestPayload) -> dict[str, str]:
 
 class ImportPayload(BaseModel):
     import_id: str
+    user_id: str | None = None
+    storage_key: str | None = None
 
 
 @router.post("/import", status_code=status.HTTP_200_OK)
-async def import_task(payload: ImportPayload) -> dict[str, str]:
-    _logger.warning("worker.import.stub", import_id=payload.import_id)
-    return {"status": "stub", "import_id": payload.import_id}
+async def import_task(payload: ImportPayload) -> dict[str, str | int]:
+    """Runs the IG bulk-import pipeline for a staged export ZIP.
+
+    Shares `process_import` with the inline POST /v1/imports path via
+    `process_stored_import` (download staged ZIP → parse → upsert →
+    enqueue per-item ingest tasks). Raises 500 on transient errors so
+    Cloud Tasks retries; deterministic parse failures return 200 with
+    status `failed` (the import row carries the reason) so a poison
+    payload is not retried into infinity.
+    """
+    if not payload.user_id or not payload.storage_key:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="import task requires user_id + storage_key",
+        )
+    try:
+        outcome = await process_stored_import(
+            payload.import_id, payload.user_id, payload.storage_key
+        )
+    except Exception as e:
+        _logger.exception("worker.import.failed", import_id=payload.import_id, err=str(e))
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"import_failed: {e}",
+        ) from e
+    _logger.info(
+        "worker.import.done",
+        import_id=payload.import_id,
+        ok=outcome.ok,
+        total_parsed=outcome.total_parsed,
+        queued=outcome.queued,
+    )
+    return {
+        "status": "ok" if outcome.ok else "failed",
+        "import_id": payload.import_id,
+        "total_parsed": outcome.total_parsed,
+        "queued": outcome.queued,
+    }
 
 
 class DeleteUserPayload(BaseModel):

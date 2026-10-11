@@ -23,6 +23,7 @@ from app.settings import get_settings
 _logger = get_logger(__name__)
 
 _UPLOAD_TIMEOUT_SECONDS = 30.0
+_DOWNLOAD_TIMEOUT_SECONDS = 60.0
 _DEFAULT_SIGNED_URL_TTL_SECONDS = 3600  # 1h — matches auth token lifetime
 
 
@@ -99,6 +100,34 @@ async def signed_url(
     # project URL prepended.
     settings = get_settings()
     return settings.supabase_url.rstrip("/") + signed_path
+
+
+async def download_object(bucket: str, object_key: str, dest: Path) -> Path:
+    """Download `{bucket}/{object_key}` to `dest`, streaming to disk.
+
+    Used by the import worker to fetch staged export ZIPs. Raises
+    StorageError on any non-2xx so callers can retry transient failures.
+    """
+    url = f"{_storage_base_url()}/object/{bucket}/{object_key}"
+    async with (
+        httpx.AsyncClient(timeout=_DOWNLOAD_TIMEOUT_SECONDS) as client,
+        client.stream("GET", url, headers=_service_auth_headers()) as response,
+    ):
+        if response.status_code >= 400:
+            body = await response.aread()
+            raise StorageError(
+                f"download {bucket}/{object_key} failed: {response.status_code} {body[:200]!r}"
+            )
+        with dest.open("wb") as fp:
+            async for chunk in response.aiter_bytes():
+                fp.write(chunk)
+    _logger.info(
+        "storage.downloaded",
+        bucket=bucket,
+        key=object_key,
+        size=dest.stat().st_size,
+    )
+    return dest
 
 
 async def delete_object(bucket: str, object_key: str) -> None:
