@@ -28,6 +28,13 @@ FROM ${BUILD_IMAGE}
 
 WORKDIR /app
 
+# ffmpeg/ffprobe: the ingest pipeline shells out to both
+# (services/media/ffmpeg.py: probe, sample_frames, extract_audio,
+# make_thumbnail). System layer before app layers for cache-friendliness.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ffmpeg \
+    && rm -rf /var/lib/apt/lists/*
+
 # Copy installed packages from builder
 COPY --from=builder /app/.venv /app/.venv
 

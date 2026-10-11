@@ -10,7 +10,7 @@ from __future__ import annotations
 from functools import lru_cache
 from typing import Literal
 
-from pydantic import Field
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -96,6 +96,21 @@ class Settings(BaseSettings):
         default=None,
         description="Cloud Run worker service URL — Cloud Tasks POSTs here",
     )
+
+    @field_validator("worker_base_url", mode="before")
+    @classmethod
+    def _empty_worker_base_url_is_unset(cls, v: str | None) -> str | None:
+        """Treat empty/blank WORKER_BASE_URL as unset.
+
+        `.env.example` ships `WORKER_BASE_URL=` (empty string), which
+        Pydantic would otherwise keep as `""` — and `enqueue_task`
+        checks `worker_base_url is None` for the dev local-dispatch
+        shortcut. Normalizing here keeps "" behaving as unset
+        everywhere without touching the dispatch check.
+        """
+        if isinstance(v, str) and not v.strip():
+            return None
+        return v
 
     # ---------------- Media downloader (Part C) ----------------
     # SSRF allowlist + per-kind size caps + timeouts for

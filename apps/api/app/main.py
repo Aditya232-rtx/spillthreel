@@ -24,7 +24,7 @@ from sentry_sdk.types import Event
 from slowapi.errors import RateLimitExceeded
 
 from app.api import health
-from app.api.v1 import categories, events, items, notifications, saves, search, users
+from app.api.v1 import categories, events, imports, items, notifications, saves, search, users
 from app.observability.logging import configure_logging, get_logger
 from app.ratelimit import (
     DefaultRateLimitMiddleware,
@@ -121,6 +121,7 @@ def create_app() -> FastAPI:
 
     app.include_router(health.router)
     app.include_router(saves.router, prefix="/v1", tags=["saves"])
+    app.include_router(imports.router, prefix="/v1", tags=["imports"])
     app.include_router(items.router, prefix="/v1", tags=["items"])
     app.include_router(categories.router, prefix="/v1", tags=["categories"])
     app.include_router(users.router, prefix="/v1", tags=["users"])
