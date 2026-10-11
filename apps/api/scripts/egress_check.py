@@ -2,7 +2,7 @@
 """Part F egress probe: verify outbound network paths per platform.
 
 Usage:
-    uv run python scripts/egress_check.py urls.txt [--full] [--provider scrapecreators|apify] [--timeout 90]
+    uv run python scripts/egress_check.py urls.txt [--full] [--provider scrapecreators|apify|brightdata] [--timeout 90]
 
 Reads a URLs file (one per line, blanks and `#` comments skipped) and, per URL,
 detects the platform and probes its egress path:
@@ -35,7 +35,7 @@ Secrets are accepted ONLY via env vars and are never printed or logged
 #   # ...or: export APIFY_API_TOKEN=... APIFY_IG_ACTOR=... APIFY_TIKTOK_ACTOR=...
 #   export YOUTUBE_API_KEY=...          # optional: enriches YouTube metadata mode
 #   export GEMINI_API_KEY=...           # only needed for --full
-#   uv run python scripts/egress_check.py urls.txt [--full] [--provider scrapecreators|apify] [--timeout 90]
+#   uv run python scripts/egress_check.py urls.txt [--full] [--provider scrapecreators|apify|brightdata] [--timeout 90]
 # ---------------------------------------------------------------------------
 """
 
@@ -66,7 +66,7 @@ if TYPE_CHECKING:
 # ---------------------------------------------------------------------------
 
 _DEFAULT_PROVIDER = "scrapecreators"
-_VALID_PROVIDERS = ("scrapecreators", "apify")
+_VALID_PROVIDERS = ("scrapecreators", "apify", "brightdata")
 
 _URL_COL_W = 50
 _PLAT_COL_W = 10
@@ -310,7 +310,7 @@ def _resolve_provider(cli: str | None, need_scraper: bool) -> str:
         return _DEFAULT_PROVIDER
     if raw not in _VALID_PROVIDERS:
         if need_scraper:
-            raise _UsageError(f"SCRAPER_PROVIDER={raw!r} is not scrapecreators|apify")
+            raise _UsageError(f"SCRAPER_PROVIDER={raw!r} is not scrapecreators|apify|brightdata")
         return _DEFAULT_PROVIDER
     return raw
 
@@ -323,7 +323,7 @@ def _preflight(platforms: list[str], provider: str, full: bool) -> None:
         and not _key_present("SCRAPECREATORS_API_KEY", "scrapecreators_api_key")
     ):
         raise _UsageError(
-            "set SCRAPECREATORS_API_KEY or use --provider apify (with APIFY_API_TOKEN set)"
+            "set SCRAPECREATORS_API_KEY or use --provider apify|brightdata (with keys set)"
         )
     if (
         need_scraper
@@ -332,7 +332,15 @@ def _preflight(platforms: list[str], provider: str, full: bool) -> None:
     ):
         raise _UsageError(
             "set APIFY_API_TOKEN (+ APIFY_IG_ACTOR/APIFY_TIKTOK_ACTOR) "
-            "or use --provider scrapecreators (with SCRAPECREATORS_API_KEY set)"
+            "or use --provider scrapecreators|brightdata (with keys set)"
+        )
+    if (
+        need_scraper
+        and provider == "brightdata"
+        and not _key_present("BRIGHTDATA_API_TOKEN", "brightdata_api_token")
+    ):
+        raise _UsageError(
+            "set BRIGHTDATA_API_TOKEN or use --provider apify/scrapecreators (with their keys set)"
         )
     if full and "youtube" in platforms and not _key_present("GEMINI_API_KEY", "gemini_api_key"):
         raise _UsageError("set GEMINI_API_KEY to use --full (YouTube Gemini summarization)")
@@ -364,6 +372,10 @@ async def _scrape_post(provider: str, platform: str, url: str) -> ScrapedPost:
         from app.services.extractors.scraper.scrapecreators import ScrapeCreatorsProvider
 
         return await ScrapeCreatorsProvider().fetch(cast("Platform", platform), url)
+    if provider == "brightdata":
+        from app.services.extractors.scraper.brightdata import BrightDataProvider
+
+        return await BrightDataProvider().fetch(cast("Platform", platform), url)
     from app.services.extractors.scraper.apify import ApifyProvider
 
     return await ApifyProvider().fetch(cast("Platform", platform), url)
