@@ -166,6 +166,10 @@ module "worker" {
   env_vars = merge(local.base_env, {
     # Selects the worker ASGI app in the shared Dockerfile CMD pattern.
     APP_MODULE = "app.worker:app"
+    # Non-secret product decision: enables the paid scraper head on
+    # IG/TikTok (settings.scraper_provider; default "none" is boot-safe
+    # degraded). Secret token itself stays in BRIGHTDATA_API_TOKEN.
+    SCRAPER_PROVIDER = "brightdata"
   })
   secret_env_vars       = local.worker_secret_env
   allow_unauthenticated = false
