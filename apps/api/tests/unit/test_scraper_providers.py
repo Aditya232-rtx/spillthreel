@@ -214,7 +214,7 @@ class TestApify:
     async def test_instagram_video(self, monkeypatch: pytest.MonkeyPatch) -> None:
         payload = _load("apify_instagram_video.json")
         _mock_client(monkeypatch, apify_mod, lambda req: _json_response(200, payload))
-        monkeypatch.setenv("APIFY_TOKEN", "test-token")
+        monkeypatch.setenv("APIFY_API_TOKEN", "test-token")
         monkeypatch.setenv("APIFY_IG_ACTOR", "someone~some-actor")
         post = await apify_mod.ApifyProvider().fetch(
             "instagram", "https://www.instagram.com/p/abc/"
@@ -225,7 +225,7 @@ class TestApify:
     async def test_instagram_carousel(self, monkeypatch: pytest.MonkeyPatch) -> None:
         payload = _load("apify_instagram_carousel.json")
         _mock_client(monkeypatch, apify_mod, lambda req: _json_response(200, payload))
-        monkeypatch.setenv("APIFY_TOKEN", "test-token")
+        monkeypatch.setenv("APIFY_API_TOKEN", "test-token")
         monkeypatch.setenv("APIFY_IG_ACTOR", "someone~some-actor")
         post = await apify_mod.ApifyProvider().fetch(
             "instagram", "https://www.instagram.com/p/abc/"
@@ -236,7 +236,7 @@ class TestApify:
     async def test_instagram_single_image(self, monkeypatch: pytest.MonkeyPatch) -> None:
         payload = _load("apify_instagram_image.json")
         _mock_client(monkeypatch, apify_mod, lambda req: _json_response(200, payload))
-        monkeypatch.setenv("APIFY_TOKEN", "test-token")
+        monkeypatch.setenv("APIFY_API_TOKEN", "test-token")
         monkeypatch.setenv("APIFY_IG_ACTOR", "someone~some-actor")
         post = await apify_mod.ApifyProvider().fetch(
             "instagram", "https://www.instagram.com/p/abc/"
@@ -246,7 +246,7 @@ class TestApify:
     async def test_instagram_deleted_is_source_gone(self, monkeypatch: pytest.MonkeyPatch) -> None:
         payload = _load("apify_instagram_deleted.json")
         _mock_client(monkeypatch, apify_mod, lambda req: _json_response(200, payload))
-        monkeypatch.setenv("APIFY_TOKEN", "test-token")
+        monkeypatch.setenv("APIFY_API_TOKEN", "test-token")
         monkeypatch.setenv("APIFY_IG_ACTOR", "someone~some-actor")
         with pytest.raises(SourceGoneError):
             await apify_mod.ApifyProvider().fetch("instagram", "https://www.instagram.com/p/gone/")
@@ -254,7 +254,7 @@ class TestApify:
     async def test_tiktok_video(self, monkeypatch: pytest.MonkeyPatch) -> None:
         payload = _load("apify_tiktok_video.json")
         _mock_client(monkeypatch, apify_mod, lambda req: _json_response(200, payload))
-        monkeypatch.setenv("APIFY_TOKEN", "test-token")
+        monkeypatch.setenv("APIFY_API_TOKEN", "test-token")
         monkeypatch.setenv("APIFY_TIKTOK_ACTOR", "someone~some-actor")
         post = await apify_mod.ApifyProvider().fetch(
             "tiktok", "https://www.tiktok.com/@u/video/123"
@@ -265,7 +265,7 @@ class TestApify:
     async def test_tiktok_carousel(self, monkeypatch: pytest.MonkeyPatch) -> None:
         payload = _load("apify_tiktok_carousel.json")
         _mock_client(monkeypatch, apify_mod, lambda req: _json_response(200, payload))
-        monkeypatch.setenv("APIFY_TOKEN", "test-token")
+        monkeypatch.setenv("APIFY_API_TOKEN", "test-token")
         monkeypatch.setenv("APIFY_TIKTOK_ACTOR", "someone~some-actor")
         post = await apify_mod.ApifyProvider().fetch(
             "tiktok", "https://www.tiktok.com/@u/video/123"
@@ -276,7 +276,7 @@ class TestApify:
     async def test_tiktok_deleted_is_source_gone(self, monkeypatch: pytest.MonkeyPatch) -> None:
         payload = _load("apify_tiktok_deleted.json")
         _mock_client(monkeypatch, apify_mod, lambda req: _json_response(200, payload))
-        monkeypatch.setenv("APIFY_TOKEN", "test-token")
+        monkeypatch.setenv("APIFY_API_TOKEN", "test-token")
         monkeypatch.setenv("APIFY_TIKTOK_ACTOR", "someone~some-actor")
         with pytest.raises(SourceGoneError):
             await apify_mod.ApifyProvider().fetch("tiktok", "https://www.tiktok.com/@u/video/999")
@@ -284,13 +284,13 @@ class TestApify:
     async def test_quota_402_is_provider_quota(self, monkeypatch: pytest.MonkeyPatch) -> None:
         payload = _load("apify_quota.json")
         _mock_client(monkeypatch, apify_mod, lambda req: _json_response(402, payload))
-        monkeypatch.setenv("APIFY_TOKEN", "test-token")
+        monkeypatch.setenv("APIFY_API_TOKEN", "test-token")
         monkeypatch.setenv("APIFY_IG_ACTOR", "someone~some-actor")
         with pytest.raises(ProviderQuotaError):
             await apify_mod.ApifyProvider().fetch("instagram", "https://www.instagram.com/p/abc/")
 
     async def test_missing_actor_is_transient(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setenv("APIFY_TOKEN", "test-token")
+        monkeypatch.setenv("APIFY_API_TOKEN", "test-token")
         monkeypatch.delenv("APIFY_IG_ACTOR", raising=False)
         # settings.py ships canonical actor defaults, so env absence alone
         # doesn't prove "not configured" — stub the settings boundary.
@@ -303,7 +303,7 @@ class TestApify:
 
     async def test_token_never_in_error_text(self, monkeypatch: pytest.MonkeyPatch) -> None:
         _mock_client(monkeypatch, apify_mod, lambda req: _json_response(500, []))
-        monkeypatch.setenv("APIFY_TOKEN", "super-secret-token")
+        monkeypatch.setenv("APIFY_API_TOKEN", "super-secret-token")
         monkeypatch.setenv("APIFY_IG_ACTOR", "someone~some-actor")
         with pytest.raises(ExtractorError) as exc:
             await apify_mod.ApifyProvider().fetch("instagram", "https://www.instagram.com/p/abc/")

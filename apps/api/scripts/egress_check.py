@@ -32,7 +32,7 @@ Secrets are accepted ONLY via env vars and are never printed or logged
 #   cd spillthereelproduct/apps/api
 #   uv sync --frozen --extra worker
 #   export SCRAPECREATORS_API_KEY=...   # IG/TikTok default provider
-#   # ...or: export APIFY_TOKEN=... APIFY_IG_ACTOR=... APIFY_TIKTOK_ACTOR=...
+#   # ...or: export APIFY_API_TOKEN=... APIFY_IG_ACTOR=... APIFY_TIKTOK_ACTOR=...
 #   export YOUTUBE_API_KEY=...          # optional: enriches YouTube metadata mode
 #   export GEMINI_API_KEY=...           # only needed for --full
 #   uv run python scripts/egress_check.py urls.txt [--full] [--provider scrapecreators|apify] [--timeout 90]
@@ -323,11 +323,15 @@ def _preflight(platforms: list[str], provider: str, full: bool) -> None:
         and not _key_present("SCRAPECREATORS_API_KEY", "scrapecreators_api_key")
     ):
         raise _UsageError(
-            "set SCRAPECREATORS_API_KEY or use --provider apify (with APIFY_TOKEN set)"
+            "set SCRAPECREATORS_API_KEY or use --provider apify (with APIFY_API_TOKEN set)"
         )
-    if need_scraper and provider == "apify" and not _key_present("APIFY_TOKEN", "apify_token"):
+    if (
+        need_scraper
+        and provider == "apify"
+        and not _key_present("APIFY_API_TOKEN", "apify_api_token")
+    ):
         raise _UsageError(
-            "set APIFY_TOKEN (+ APIFY_IG_ACTOR/APIFY_TIKTOK_ACTOR) "
+            "set APIFY_API_TOKEN (+ APIFY_IG_ACTOR/APIFY_TIKTOK_ACTOR) "
             "or use --provider scrapecreators (with SCRAPECREATORS_API_KEY set)"
         )
     if full and "youtube" in platforms and not _key_present("GEMINI_API_KEY", "gemini_api_key"):

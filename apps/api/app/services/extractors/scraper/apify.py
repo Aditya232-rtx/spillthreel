@@ -91,13 +91,13 @@ def _base_url() -> str:
 
 
 def _api_token() -> str | None:
-    raw = os.environ.get("APIFY_TOKEN", "").strip()
+    raw = os.environ.get("APIFY_API_TOKEN", "").strip()
     if raw:
         return raw
     try:
         from app.settings import get_settings  # deferred: integrator owns field
 
-        value = getattr(get_settings(), "apify_token", None)
+        value = getattr(get_settings(), "apify_api_token", None)
         if isinstance(value, str) and value.strip():
             return value.strip()
     except Exception:
