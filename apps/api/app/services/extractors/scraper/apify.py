@@ -240,7 +240,10 @@ class ApifyProvider:
         self, platform: Platform, actor: str, url: str, token: str
     ) -> ScrapedPost:
         redacted = _redact(url)
-        target = f"{_base_url()}/v2/actors/{actor}/run-sync-get-dataset-items"
+        # Actor IDs use owner/name form (e.g. apify/instagram-scraper) but the
+        # API path segment requires tilde encoding: apify~instagram-scraper.
+        actor_path = actor.replace("/", "~")
+        target = f"{_base_url()}/v2/actors/{actor_path}/run-sync-get-dataset-items"
         params = {"format": "json", "clean": "true", "limit": "5"}
         headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
         body = _actor_input(platform, url)
@@ -271,7 +274,9 @@ class ApifyProvider:
                     f"apify quota/auth (http {resp.status_code}) for {redacted}"
                 )
             if resp.status_code == 404:
-                raise SourceGoneError(f"apify actor not found for {redacted}")
+                raise ExtractorError(
+                    f"apify actor/config not found for {redacted} (check actor ID)"
+                )
             if resp.status_code == 408:
                 raise ExtractorError(f"apify run timed out for {redacted}")
             if 500 <= resp.status_code <= 599 and attempt == 0:

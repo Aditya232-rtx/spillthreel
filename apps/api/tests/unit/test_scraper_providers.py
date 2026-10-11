@@ -222,6 +222,29 @@ class TestApify:
         assert post.media_type == "video"
         assert post.video_url == "https://cdn.example.com/apify/ig_video.mp4"
 
+    async def test_actor_slash_encoded_as_tilde(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        payload = _load("apify_instagram_video.json")
+        seen: dict[str, str] = {}
+
+        def _handler(req: httpx.Request) -> httpx.Response:
+            seen["url"] = str(req.url)
+            return _json_response(200, payload)
+
+        _mock_client(monkeypatch, apify_mod, _handler)
+        monkeypatch.setenv("APIFY_API_TOKEN", "test-token")
+        monkeypatch.setenv("APIFY_IG_ACTOR", "someone/some-actor")
+        await apify_mod.ApifyProvider().fetch("instagram", "https://www.instagram.com/p/abc/")
+        assert "someone~some-actor" in seen["url"]
+        assert "someone/some-actor" not in seen["url"]
+
+    async def test_http_404_is_transient_not_gone(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        _mock_client(monkeypatch, apify_mod, lambda req: _json_response(404, {"error": "x"}))
+        monkeypatch.setenv("APIFY_API_TOKEN", "test-token")
+        monkeypatch.setenv("APIFY_IG_ACTOR", "someone~some-actor")
+        with pytest.raises(ExtractorError) as exc_info:
+            await apify_mod.ApifyProvider().fetch("instagram", "https://www.instagram.com/p/abc/")
+        assert not isinstance(exc_info.value, SourceGoneError)
+
     async def test_instagram_carousel(self, monkeypatch: pytest.MonkeyPatch) -> None:
         payload = _load("apify_instagram_carousel.json")
         _mock_client(monkeypatch, apify_mod, lambda req: _json_response(200, payload))
