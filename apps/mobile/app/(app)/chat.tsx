@@ -20,7 +20,7 @@ import Animated, {
 } from 'react-native-reanimated';
 import { Svg, Line, Path, Polyline, Rect } from 'react-native-svg';
 import { SUGGESTION_CHIPS, type ChatErrorKind, type ChatMessage } from '@/data/chat';
-import { ApiError, search, type SearchCard } from '@/lib/api';
+import { ApiError, search, type SearchCard, type SearchCitation } from '@/lib/api';
 import { alpha, color, font, radius, space } from '@/theme/tokens';
 
 interface Conversation {
@@ -58,16 +58,56 @@ function conversationTitle(firstQuery: string): string {
 
 /**
  * v1 → v2 history migration. v1 messages carry no cards[]/citations[] and may
- * carry the legacy require()-image `card` — drop card fields, keep text.
- * Unknown shapes degrade to an empty-text bubble rather than crashing load.
+ * carry the legacy require()-image `card` — drop ONLY that legacy field and
+ * keep text. v2 messages already carry backend cards[]/citations[] — rehydrate
+ * them with shape validation. Unknown shapes degrade to an empty-text bubble
+ * rather than crashing load. Stored v2 without cards stays text-only
+ * (backward compatible).
  */
+function isSearchCard(raw: unknown): raw is SearchCard {
+  const c = (typeof raw === 'object' && raw !== null ? raw : {}) as Partial<SearchCard>;
+  return (
+    typeof c.item_id === 'string' &&
+    typeof c.title === 'string' &&
+    typeof c.platform === 'string' &&
+    typeof c.deep_link === 'string' &&
+    typeof c.score === 'number'
+  );
+}
+
+function isSearchCitation(raw: unknown): raw is SearchCitation {
+  const c = (typeof raw === 'object' && raw !== null ? raw : {}) as Partial<SearchCitation>;
+  return typeof c.item_id === 'string' && typeof c.index === 'number';
+}
+
 function migrateMessage(raw: unknown): ChatMessage {
-  const m = (typeof raw === 'object' && raw !== null ? raw : {}) as Partial<ChatMessage>;
-  return {
+  const m = (typeof raw === 'object' && raw !== null ? raw : {}) as Partial<ChatMessage> & {
+    cards?: unknown;
+    citations?: unknown;
+  };
+  const msg: ChatMessage = {
     id: typeof m.id === 'string' ? m.id : newId('msg'),
     isUser: m.isUser === true,
     text: typeof m.text === 'string' ? m.text : '',
   };
+  // v2 rehydration — validated, so a corrupt entry can't crash render.
+  if (Array.isArray(m.cards)) {
+    const cards = (m.cards as unknown[]).filter(isSearchCard);
+    if (cards.length > 0) msg.cards = cards;
+  }
+  if (Array.isArray(m.citations)) {
+    const citations = (m.citations as unknown[]).filter(isSearchCitation);
+    if (citations.length > 0) msg.citations = citations;
+  }
+  if (m.error === 'auth' || m.error === 'retryable' || m.error === 'generic') {
+    msg.error = m.error;
+  }
+  if (typeof m.retryQuery === 'string') {
+    msg.retryQuery = m.retryQuery;
+  }
+  // NOTE: legacy `card` (require() image) is intentionally never copied —
+  // the only field this migration strips.
+  return msg;
 }
 
 function migrateConversations(raw: unknown): Conversation[] | null {
@@ -88,6 +128,11 @@ function errorKind(err: unknown): ChatErrorKind {
     if (err.status === 401) return 'auth';
     if (err.status === 503 || err.status === 504) return 'retryable';
   }
+  // Default-timeout aborts surface as DOMException 'TimeoutError' (or a
+  // generic Error with the same name on runtimes without DOMException).
+  // Timeouts are transient — offer Retry, same as 503/504.
+  const name = err instanceof DOMException ? err.name : (err as { name?: unknown })?.name;
+  if (name === 'TimeoutError') return 'retryable';
   return 'generic';
 }
 

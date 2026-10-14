@@ -58,49 +58,34 @@ export default function ItemDetailScreen() {
     }
   }, [router]);
 
-  const load = useCallback(async () => {
+  const load = useCallback(async (signal?: AbortSignal) => {
     if (!id) {
       setStatus('error');
       return;
     }
+    if (signal?.aborted) return;
     setStatus('loading');
     setRetryNote(null);
     try {
-      const detail = await getItem(id);
+      const detail = await getItem(id, signal ? { signal } : undefined);
+      if (signal?.aborted) return;
       setItem(detail);
       setImgFailed(false);
       setStatus('ready');
     } catch (err) {
+      if (signal?.aborted) return;
       setItem(null);
       setStatus(err instanceof ApiError && err.status === 404 ? 'not-found' : 'error');
     }
   }, [id]);
 
   useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      if (!id) {
-        if (!cancelled) setStatus('error');
-        return;
-      }
-      if (!cancelled) setStatus('loading');
-      setRetryNote(null);
-      try {
-        const detail = await getItem(id);
-        if (cancelled) return;
-        setItem(detail);
-        setImgFailed(false);
-        setStatus('ready');
-      } catch (err) {
-        if (cancelled) return;
-        setItem(null);
-        setStatus(err instanceof ApiError && err.status === 404 ? 'not-found' : 'error');
-      }
-    })();
+    const controller = new AbortController();
+    void load(controller.signal);
     return () => {
-      cancelled = true;
+      controller.abort();
     };
-  }, [id]);
+  }, [load]);
 
   async function handleRetry(): Promise<void> {
     if (!id || retryBusy) return;

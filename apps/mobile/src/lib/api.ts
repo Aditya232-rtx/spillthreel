@@ -43,6 +43,54 @@ interface RequestOptions {
   signal?: AbortSignal;
 }
 
+/** Default network timeout (ms) — every request aborts past this. */
+const DEFAULT_TIMEOUT_MS = 15000;
+
+function timeoutSignal(): AbortSignal | undefined {
+  try {
+    return AbortSignal.timeout(DEFAULT_TIMEOUT_MS);
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Combine the caller's cancel signal with the default timeout so every
+ * request is both cancellable AND time-bounded. Uses AbortSignal.any when
+ * available, with a manual AbortController fallback for older runtimes.
+ */
+function effectiveSignal(caller?: AbortSignal): AbortSignal | undefined {
+  const timeout = timeoutSignal();
+  if (!caller) return timeout;
+  if (!timeout) return caller;
+  try {
+    if (typeof AbortSignal.any === 'function') {
+      return AbortSignal.any([caller, timeout]);
+    }
+  } catch {
+    // fall through to manual combine below
+  }
+  const controller = new AbortController();
+  if (caller.aborted || timeout.aborted) {
+    controller.abort(caller.aborted ? caller.reason : timeout.reason);
+    return controller.signal;
+  }
+  const onAbort = (): void => {
+    try {
+      controller.abort(caller.aborted ? caller.reason : timeout.reason);
+    } catch {
+      try {
+        controller.abort();
+      } catch {
+        // no-op
+      }
+    }
+  };
+  caller.addEventListener('abort', onAbort, { once: true });
+  timeout.addEventListener('abort', onAbort, { once: true });
+  return controller.signal;
+}
+
 async function apiRequest<T>(path: string, options: RequestOptions = {}): Promise<T> {
   const { method = 'GET', body = null, auth = true, signal } = options;
   const headers: Record<string, string> = {
@@ -61,13 +109,16 @@ async function apiRequest<T>(path: string, options: RequestOptions = {}): Promis
     headers.Authorization = `Bearer ${token}`;
   }
 
+  const effective = effectiveSignal(signal);
   const response = await fetch(`${API_BASE_URL}${path}`, {
     method,
     headers,
     body: body ? JSON.stringify(body) : undefined,
     // AbortError (a DOMException, NOT an ApiError) propagates to the caller,
-    // which must ignore it when it aborted the request itself.
-    ...(signal ? { signal } : null),
+    // which must ignore it when it aborted the request itself. A timeout
+    // surfaces as a DOMException named 'TimeoutError' — callers map it to
+    // their retryable path (see errorKind in chat).
+    ...(effective ? { signal: effective } : null),
   });
 
   const isJson = response.headers.get('content-type')?.includes('application/json');
@@ -208,8 +259,11 @@ export interface ItemDetail {
   failure_reason: string | null;
 }
 
-export function getItem(id: string): Promise<ItemDetail> {
-  return api.get<ItemDetail>(`/v1/items/${encodeURIComponent(id)}`);
+export function getItem(id: string, opts?: { signal?: AbortSignal }): Promise<ItemDetail> {
+  return api.get<ItemDetail>(
+    `/v1/items/${encodeURIComponent(id)}`,
+    opts?.signal ? { signal: opts.signal } : undefined,
+  );
 }
 
 /**
@@ -224,6 +278,28 @@ export interface ItemActionResponse {
   state: string;
 }
 
-export function retryItem(id: string): Promise<ItemActionResponse> {
-  return api.post<ItemActionResponse>(`/v1/items/${encodeURIComponent(id)}/retry`, {});
+export function retryItem(
+  id: string,
+  opts?: { signal?: AbortSignal },
+): Promise<ItemActionResponse> {
+  return api.post<ItemActionResponse>(
+    `/v1/items/${encodeURIComponent(id)}/retry`,
+    {},
+    opts?.signal ? { signal: opts.signal } : undefined,
+  );
+}
+
+/**
+ * DELETE /v1/me — account deletion.
+ *
+ * Contract (apps/api/app/api/v1/users.py `delete_me`): 202
+ * `{status: "scheduled"}` — the profile is soft-flagged and a
+ * `delete_user` task purges auth + user-scoped rows + embeddings +
+ * Storage. Callers must signOut() locally after this resolves.
+ */
+export function deleteMe(opts?: { signal?: AbortSignal }): Promise<{ status: string }> {
+  return api.delete<{ status: string }>(
+    '/v1/me',
+    opts?.signal ? { signal: opts.signal } : undefined,
+  );
 }

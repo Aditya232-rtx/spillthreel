@@ -27,12 +27,15 @@ export default function AuthCallbackScreen() {
     async function run(): Promise<void> {
       // No URL yet (or web, where detectSessionInUrl already handled it):
       // if a session exists we are done, otherwise wait for the deep link.
+      // consumeOAuthNext() ONLY after a session is confirmed — consuming
+      // early deletes the stored next before the cold-start deep link
+      // arrives, defaulting OAuth signups to login (never reaching
+      // your-name/import1).
       const { data: existing } = await supabase.auth.getSession();
-      const next = await consumeOAuthNext();
-      const destination = routeForOAuthNext(next);
 
       if (existing.session) {
-        router.replace(destination as never);
+        const next = await consumeOAuthNext();
+        router.replace(routeForOAuthNext(next) as never);
         return;
       }
 
@@ -51,7 +54,8 @@ export default function AuthCallbackScreen() {
 
       const { data } = await supabase.auth.getSession();
       if (data.session) {
-        router.replace(destination as never);
+        const next = await consumeOAuthNext();
+        router.replace(routeForOAuthNext(next) as never);
       } else {
         setErrorMessage('Sign-in completed but no session was created. Please try again.');
       }

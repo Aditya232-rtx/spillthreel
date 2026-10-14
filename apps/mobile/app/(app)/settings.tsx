@@ -7,6 +7,7 @@ import { DEFAULT_TOGGLE_STATE, SETTINGS_GROUPS } from '@/data/settings';
 import { useAuth } from '@/hooks/useAuth';
 import { AvatarView } from '@/components/AvatarView';
 import { getFirstName } from '@/lib/display-name';
+import { ApiError, deleteMe } from '@/lib/api';
 import { border, color, font, radius, space } from '@/theme/tokens';
 
 const TOAST_DURATION_MS = 2200;
@@ -17,6 +18,8 @@ export default function SettingsScreen() {
   const [toggles, setToggles] = useState(DEFAULT_TOGGLE_STATE);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
+  const [deleting, setDeleting] = useState(false);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
 
   useEffect(() => {
     if (!toast) return;
@@ -26,6 +29,7 @@ export default function SettingsScreen() {
 
   function handleRowPress(groupId: string, rowId: string) {
     if (rowId === 'delete-account') {
+      setDeleteError(null);
       setShowDeleteConfirm(true);
       return;
     }
@@ -45,6 +49,28 @@ export default function SettingsScreen() {
       return;
     }
     setToast(`${rowId} tapped`);
+  }
+
+  async function handleDeleteAccount(): Promise<void> {
+    if (deleting) return;
+    setDeleting(true);
+    setDeleteError(null);
+    try {
+      await deleteMe();
+      // Backend soft-flags the profile and schedules purge — clear the
+      // local session next; AuthGate routes to welcome on session null.
+      await signOut();
+      setShowDeleteConfirm(false);
+      // Fallback only: signOut's auth-state listener already drives the gate.
+      router.replace('/(auth)/welcome');
+    } catch (err) {
+      // Stay put on failure — account still exists, no navigation.
+      setDeleteError(
+        err instanceof ApiError ? err.message : 'Could not delete your account — try again.',
+      );
+    } finally {
+      setDeleting(false);
+    }
   }
 
   return (
@@ -111,17 +137,18 @@ export default function SettingsScreen() {
           >
             <Text style={{ fontFamily: font.display, fontSize: 20, color: color.ink, textTransform: 'uppercase' }}>Delete account?</Text>
             <Text style={{ fontFamily: font.body, fontSize: 13, color: 'rgba(21,23,15,0.75)' }}>
-              This removes every saved reel and cannot be undone.
+              This deletes your account and data — every saved reel — and cannot be undone.
             </Text>
+            {deleteError ? (
+              <Text style={{ fontFamily: font.body, fontSize: 12.5, color: '#B3261E' }}>{deleteError}</Text>
+            ) : null}
             <PillButton
-              label="Delete my account"
+              label={deleting ? 'Deleting…' : 'Delete my account'}
               variant="coral"
               minHeight={46}
               fontSize={14}
-              onPress={() => {
-                setShowDeleteConfirm(false);
-                router.replace('/(auth)/welcome');
-              }}
+              disabled={deleting}
+              onPress={() => void handleDeleteAccount()}
             />
             <PillButton label="Cancel" variant="outline" minHeight={46} fontSize={14} onPress={() => setShowDeleteConfirm(false)} />
           </View>

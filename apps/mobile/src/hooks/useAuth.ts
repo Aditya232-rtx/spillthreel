@@ -47,6 +47,10 @@ export function useAuth(): UseAuthResult {
     // getSession() call succeeds.
     supabase.auth.getSession().then(({ data }) => {
       setSession(data.session);
+    }).catch(() => {
+      // Hydration failed (corrupt SecureStore, etc.) — stay signed out
+      // rather than hanging on the splash gate forever.
+    }).finally(() => {
       setLoading(false);
     });
 
