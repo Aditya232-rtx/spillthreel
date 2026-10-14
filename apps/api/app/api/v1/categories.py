@@ -11,6 +11,7 @@ import ulid
 from fastapi import APIRouter, HTTPException, status
 from pydantic import BaseModel, Field
 from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError
 
 from app.auth.middleware import CurrentUser, DbSession
 from app.db.models import Category, ItemCategory
@@ -90,11 +91,17 @@ async def create_category(
     session.add(category)
     try:
         await session.commit()
-    except Exception:
+    except IntegrityError as e:
         await session.rollback()
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT, detail="category name already exists"
-        ) from None
+        ) from e
+    except Exception as e:
+        await session.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="category create failed",
+        ) from e
     await session.refresh(category)
 
     # Kick off the backfill classifier — server-side job scans the user's

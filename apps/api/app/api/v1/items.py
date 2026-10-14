@@ -1,7 +1,7 @@
 """GET /v1/items + GET /v1/items/{id} — library listing and detail.
 
-Filtering per PRD F3.4: platform, category, collection, state.
-Cursor pagination on `saved_at` (DESC).
+Filtering: platform, state, category_id, collection_id.
+Cursor pagination on `saved_at` (DESC); malformed cursors are 422.
 """
 
 from __future__ import annotations
@@ -16,7 +16,7 @@ from sqlalchemy import and_, desc, select
 
 from app.auth.middleware import CurrentUser, DbSession
 from app.db.engine import get_pg_pool
-from app.db.models import IngestionEvent, Item
+from app.db.models import CollectionItem, IngestionEvent, Item, ItemCategory
 from app.observability.logging import get_logger
 from app.services.memory.pgvector_store import PgVectorStore
 from app.tasks.enqueue import enqueue_task
@@ -62,16 +62,50 @@ async def list_items(
     session: DbSession,
     platform: Annotated[str | None, Query()] = None,
     state: Annotated[str | None, Query()] = None,
+    category_id: Annotated[str | None, Query()] = None,
+    collection_id: Annotated[str | None, Query()] = None,
     cursor: Annotated[str | None, Query()] = None,
     limit: Annotated[int, Query(ge=1, le=100)] = 30,
 ) -> ItemsPage:
+    """List the user's saves, newest first.
+
+    Filters (all optional, ANDed): `platform`, `state`, `category_id`
+    (via item_categories), `collection_id` (via collection_items).
+    `cursor` is an ISO-8601 `saved_at` upper bound (exclusive); malformed
+    values are 422, never 500.
+    """
     conditions = [Item.user_id == user.id]
     if platform:
         conditions.append(Item.platform == platform)
     if state:
         conditions.append(Item.state == state)
+    if category_id:
+        conditions.append(
+            select(ItemCategory.item_id)
+            .where(
+                ItemCategory.item_id == Item.id,
+                ItemCategory.category_id == category_id,
+            )
+            .exists()
+        )
+    if collection_id:
+        conditions.append(
+            select(CollectionItem.item_id)
+            .where(
+                CollectionItem.item_id == Item.id,
+                CollectionItem.collection_id == collection_id,
+            )
+            .exists()
+        )
     if cursor:
-        conditions.append(Item.saved_at < datetime.fromisoformat(cursor))
+        try:
+            cursor_dt = datetime.fromisoformat(cursor)
+        except ValueError as e:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="invalid cursor",
+            ) from e
+        conditions.append(Item.saved_at < cursor_dt)
 
     stmt = select(Item).where(and_(*conditions)).order_by(desc(Item.saved_at)).limit(limit + 1)
     rows = (await session.execute(stmt)).scalars().all()
