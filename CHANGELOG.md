@@ -1,5 +1,49 @@
 # Changelog
 
+## Unreleased — Phase 1 backends live, ingestion rebuilt on vendors (2026-10-14)
+
+- **Search RAG** (`POST /v1/search`): pgvector retriever (threshold 0.55)
+  + Gemini Flash-Lite answerer, citation guard with extractive fallback,
+  per-route rate limit. Mobile chat wired (`api.ts` search, cards /
+  citations / error / retry states, history v2). Zero-hit path verified
+  live (680 ms, no-match text).
+- **Items**: `POST /v1/items/{id}/retry` (failed→queued) + `enhance`
+  (+ `/work/enhance` re-summarize/re-embed) + `category_id` /
+  `collection_id` filters + garbage-cursor 422.
+- **Imports**: `POST /v1/imports` (Meta DYI ZIP; inline ≤50, async above)
+  + `GET /v1/imports/{id}` + real `/work/import`; `ig_pipeline` with
+  saves-identical dedup. Smoked live (201 → indexing).
+- **Extractors**: gallery-dl image chain (IG/X last-resort); Bright Data
+  third provider (sync-`/scrape`-first, trigger fallback — some accounts
+  entitle only `/scrape`); Apify actor-ID `~`-encoding fix + 404-taxonomy
+  fix. Apify AND Bright Data verified end-to-end with real byte downloads
+  (1–6.8 MB) from laptop and Google-network Cloud Build runs.
+- **Pipeline**: YouTube-native branch + shared tail + image branch
+  (carousel/photo indexing); `WORKER_BASE_URL=""`→None;
+  `delete_user` purge task; `category_backfill` classifier; LLM budget
+  guards + per-call cost logging; ffmpeg in both images; categories 409
+  narrowing. Full local loop green (`fully_indexed`, search score 0.89
+  with valid citation).
+- **Events/notifications**: `GET /v1/events` SSE + `POST
+  /v1/notifications/token` store (both smoked live); item detail screen
+  `/(app)/item/[id]` with retry.
+- **Mobile hardening**: real account deletion, OAuth-next timing fix, 15 s
+  request timeouts, useAuth catch, history preserves cards, segments
+  tuple guard. tsc passes with and without generated `.expo/` types.
+- **Infra/CI**: Cobalt Cloud Run service + secrets destroyed via TF;
+  scraper secret shells live (`BRIGHTDATA_API_TOKEN` v1,
+  `APIFY_API_TOKEN` v1, `YOUTUBE_API_KEY` v1, `SCRAPECREATORS` shell
+  unmapped-pending-signup); `SCRAPER_PROVIDER=brightdata` on worker;
+  WIF vars + `GCP_ENABLED=true`. api-ci, build-and-push, terraform-plan,
+  mobile-ci all green on main.
+- **EAS**: first preview build failed at cloud `Run gradlew` (unknown
+  task — needs the failing task name from the build page or a local
+  SDK repro; SDK present on this Mac). Prebuild clean; removed invalid
+  `newArchEnabled` key (SDK 57 default).
+- **Known risks (not bugs)**: YouTube/GCP-egress bot-block (terminal
+  `failed` with reason); one transient staging search 500 under pooler
+  (statement-cache, retry passes — fix: `statement_cache_size=0`).
+
 ## Unreleased — Retire Cobalt, rebuild ingestion (scraper vendors + YouTube-native)
 
 Why: datacenter egress gets blocked by platform anti-bot stacks, so a

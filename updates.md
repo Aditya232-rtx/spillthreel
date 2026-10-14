@@ -1,11 +1,42 @@
 # SpillTheReel — Build Updates & Punch List
 
-**Last updated:** 2026-09-26
+**Last updated:** 2026-10-14
 **Repo:** https://github.com/Aditya232-rtx/spillthreel
-**Latest commit:** `17eec3b` — feat(app): dynamic identity, verify nudges, chat rebuild
+**Latest commit:** `f7db275` — chore(infra): unmap versionless scrapcreators secret
+**Branch:** `main` — in sync with origin, all 4 CIs green (api-ci, mobile-ci, terraform-plan, build-and-push)
 
 Living document. Keep this in the repo root, update on every session close.
 Structure per section: **✅ Done · 🟡 Needs improvement · 🔴 Missing · ⏳ Pending**.
+
+## 0. Current State — Phase Completion (2026-10-14)
+
+| Phase | Progress | Standing |
+|---|---|---|
+| **Phase 0** — staging deploy (Apple signup excluded) | **~95%** | ✅ 3 Cloud Run services live, queues RUNNING, 7→9 secrets, WIF + CI deploy loop, both DBs at hardened head, B9 6/6 smokes. ⏳ EAS green build + real-device testing (first build failed cloud gradlew — diagnosis open). 🔴 Human account items only: Play Console, domain, Supabase Pro/PITR verify, Gemini quota. |
+| **Phase 1** — search RAG + endpoints + ingestion rebuild | **~90%** | ✅ All endpoints built/deployed/smoked (search, retry/enhance, gallerydl, events/notifications, imports, ig_pipeline, item screen, mobile chat). Apify + Bright Data download-verified incl. Google-network runs. 🟡 TikTok proof needs real URLs; ScrapeCreators needs key + test; full Cloud Shell matrix; egress-strategy decision. 🔴 Deferred smalls: Last-Event-ID resume, notifications list, CHECK constraint, `text_indexed` state question, search statement-cache fix, `image_tag` TF var, deployer role scoping, PR-comment step, parser-corpus fixture (12 unit skips), RLS suite in CI, OTel/metrics. |
+| **Mobile app overall** | **~80%** | ✅ Chat/search/items wired to backend, detail screen, audit TOP 5 fixed. 🟡 Home/profile still mock data, import UI simulated, share-intent unwired, push sending unsent. 🔴 No device testing yet (blocked on EAS green). |
+| **EAS / device testing** | **~20%** | 🟡 First preview build failed at `Run gradlew` (unknown task). Prebuild clean locally, `newArchEnabled` fix committed, Android SDK present on Mac. ⏳ Need failing task name (build page) or local gradle repro, then rebuild. |
+
+### Pending (needs a human — agents cannot)
+- Play Console signup; domain purchase/DNS; Supabase Pro + PITR verify (staging+prod); Gemini quota check; app-name reservation.
+- `terraform apply` for any future infra wave (all applies to date done; none pending right now).
+- EAS build page read (failing gradle task name) if local repro stalls.
+- Egress-strategy decision (Cloud NAT static IP recommended) before production ingestion.
+- Paste `SCRAPECREATORS_API_KEY` when signed up; re-add worker mapping (3-step recipe in TF commit notes).
+
+### Missing (no owner yet)
+- TikTok proof URLs (2–3 real ones) for provider verification.
+- `GET /v1/notifications/token?list`, Last-Event-ID resume, notifications push sending.
+- RLS pytest suite in CI; OTel spans + Cloud Monitoring metrics; TanStack Query hooks.
+- Onboarding walkthrough, notification opt-in, empty states, saved-audio tab, export UI, localization, share-intent JS wiring, `useShareIntent` provider.
+
+### Needs improvement (ranked)
+1. Search transient 500 under pooler → `statement_cache_size=0` in engine config.
+2. `text_indexed` state unreachable — implement text-first path or drop from constraint.
+3. SSE long-lived connections vs pool size (per-poll sessions + idle timeout).
+4. Home/profile mock data → real `GET /v1/*` wiring; import UI simulated → real upload.
+5. `expo-share-intent` MIME config + preview-build verification.
+6. Mobile package/SDK drift (`expo-doctor` 20/21) + add `typecheck` script, make doctor blocking.
 
 Companion docs (contract-level, don't drift): [prd.md](./prd.md) · [trd.md](./trd.md) · [architecture.md](./architecture.md) · [buildphase.md](./buildphase.md) · [design-system.md](./design-system.md) · [claude-design-handoff.md](./claude-design-handoff.md)
 
@@ -265,35 +296,33 @@ Companion docs (contract-level, don't drift): [prd.md](./prd.md) · [trd.md](./t
 
 In priority order. Session should pick up here:
 
-1. **Build search RAG loop** — `services/search/retriever.py`, `services/search/answerer.py`, `/v1/search` endpoint (chat UI is ready with stub replies + history).
-2. **Build IG import pipeline** (Phase 2) — parser exists (`ig_parser.py` + `taxonomy.py` + corpus tests); still missing `ig_pipeline.py`, `/v1/import/instagram` upload + `/v1/import/{id}` progress endpoints, throttled enhance queue.
-3. **Remaining Phase 1 endpoints** — `/v1/events` SSE, `/enhance`, `/retry`, `/notifications/token`, `gallerydl.py`.
-4. **Manual smoke test** — POST to `/v1/saves` with a real IG reel URL; watch ingestion end-to-end (scraper/yt-dlp → ffmpeg → Gemini → pgvector → thumbnail → `fully_indexed`). Paid paths pre-verified via `egress_check.py` from Cloud Shell.
-5. **Share-sheet native wiring** (PRD F1) + TestFlight external build to validate the pattern early.
-6. **Apple provider** — Services ID + p8 key → Supabase dashboard; then native-Apple test on a real iOS device.
-7. **Observability** — OTel spans, Cloud Monitoring metrics, alert policies (TRD §17).
-8. **CI workflows** + RLS test suite + EAS Build/Submit configs.
+1. **EAS green build** — get failing gradle task (build page or local SDK repro) → fix → `gh workflow run eas-preview` → install APK → real-device pass (share-receive, chat search, item screen, import).
+2. **Egress decision + full matrix** — Cloud Shell run (~50 URLs) → pick primary provider → point staging users at new pipeline.
+3. **TikTok proof** — 2–3 real URLs through Bright Data/Apify → download bytes.
+4. **Small fixes batch** — statement_cache_size, Last-Event-ID, notifications list, CHECK constraint, image_tag var, deployer scoping, parser-corpus fixture.
+5. **Observability** — OTel spans, Cloud Monitoring metrics + alerts (TRD §17).
+6. **Remaining product UI** — home/profile real data, import UI wiring, share-intent, push sending, onboarding/empty states.
+7. **Apple provider** — Services ID + p8 → Supabase dashboard (needs Apple Developer account).
 
 ---
 
 ## 9. Commit History Snapshot
 
 ```
-17eec3b feat(app): dynamic identity, verify nudges, chat rebuild
-44f67a4 chore(tools): add Supabase agent skills + lockfile
-975e18f feat(auth): production-grade authentication
-84bd6e9 chore(security): ignore real-user IG export fixtures (personal data)
-88218e8 chore(security): harden .gitignore for env variants, terraform, signing keys
-33891db feat(mobile): fix OAuth login/signup flow + root auth gate
-bf714a3 feat(backend): Phase 1 ingest pipeline scaffolding + Storage buckets
-863d60e docs: add updates.md — living build punch-list
-8aa3b9d feat(db): apply initial schema to Supabase Postgres
-561605d chore: add Supabase MCP server to project config
-7d1d10f feat(backend): Supabase new-format API keys + asymmetric JWT (ES256/JWKS)
-27c7d60 chore(api): add .env.example template and expand .gitignore
-f4986e0 feat(backend): Phase 0 API scaffold + swap to Supabase (Auth+DB+Storage)
-25fee91 feat(categories): dial physics polish, add-category flow, real Oswald weights
-284e6bc feat: implement the infinite rotating category dial
-3d675ee feat: scaffold Expo RN app with kitsch-minimal design system
-49fb7b4 docs: initial PRD, TRD, architecture, buildphase, design system, design handoff
+f7db275 chore(infra): unmap versionless scrapcreators secret
+d1ef810 fix(mobile): account deletion + oauth + timeouts + history
+1e54505 fix(api): categories 409 + items cursor/filters
+24de950 feat(api): LLM budget guards
+6f6e77b feat(api): category backfill
+0f921f7 feat(api): user deletion purge task
+6dc5cd5 chore(infra): worker SCRAPER_PROVIDER staging env
+4768b56 chore(api): imports wiring + ffmpeg + WORKER_BASE_URL empty-string
+fa71bc0 feat(mobile): item detail screen
+103de4e feat(api): IG import pipeline
+0402913 chore(build): Cloud Build egress probe config
+b4eca10 feat(api): Bright Data sync-scrape first, trigger fallback
+83b5c93 fix(api): Apify actor URL tilde-encoding + 404 taxonomy
+7bd9cbd feat(api): egress_check supports brightdata provider
+15cc9c1 chore(mcp): Bright Data MCP placeholder config
+(older: fe77ca5 docs Cobalt retire → back to 49fb7b4 initial docs; full log: git log --oneline)
 ```
