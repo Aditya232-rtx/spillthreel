@@ -47,11 +47,13 @@ async def dispatch_local(task_type: str, payload: dict[str, str | int | float]) 
         return
 
     if task_type == "delete_user":
-        _logger.info(
-            "task.local.delete_user_stub",
-            user_id=payload.get("user_id"),
-            note="account deletion cascade not yet implemented",
-        )
+        from app.services.users.deletion import delete_user_account
+
+        user_id = str(payload.get("user_id") or "")
+        if not user_id:
+            _logger.warning("task.local.delete_user_missing_fields", payload=payload)
+            return
+        await delete_user_account(user_id)
         return
 
     if task_type == "category_backfill":

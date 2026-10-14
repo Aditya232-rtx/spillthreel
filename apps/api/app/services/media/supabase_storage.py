@@ -141,3 +141,60 @@ async def delete_object(bucket: str, object_key: str) -> None:
         raise StorageError(
             f"delete {bucket}/{object_key} failed: {response.status_code} {response.text[:200]}"
         )
+
+
+async def list_objects(bucket: str, prefix: str, limit: int = 1000, offset: int = 0) -> list[str]:
+    """List object keys under `prefix` (service-role, bypasses RLS).
+
+    Wraps POST /storage/v1/object/list/{bucket}. Returns keys relative to
+    the bucket root. Unknown shapes return [] rather than raising — a
+    half-provisioned bucket must not wedge account deletion.
+    """
+    url = f"{_storage_base_url()}/object/list/{bucket}"
+    async with httpx.AsyncClient(timeout=_UPLOAD_TIMEOUT_SECONDS) as client:
+        response = await client.post(
+            url,
+            headers=_service_auth_headers(),
+            json={"prefix": prefix, "limit": limit, "offset": offset},
+        )
+    if response.status_code >= 400:
+        raise StorageError(
+            f"list {bucket}/{prefix} failed: {response.status_code} {response.text[:200]}"
+        )
+    try:
+        body = response.json()
+    except ValueError as e:
+        raise StorageError(f"list {bucket}/{prefix} returned invalid JSON: {e}") from e
+    if not isinstance(body, list):
+        return []
+    keys: list[str] = []
+    clean_prefix = prefix.rstrip("/")
+    for entry in body:
+        if not isinstance(entry, dict):
+            continue
+        name = entry.get("name")
+        if not isinstance(name, str) or not name:
+            continue
+        if name.startswith(clean_prefix) or name.startswith(prefix):
+            keys.append(name)
+        else:
+            keys.append(f"{clean_prefix}/{name.lstrip('/')}" if clean_prefix else name)
+    return keys
+
+
+async def delete_prefix(bucket: str, prefix: str) -> int:
+    """Delete every object under `prefix`. Returns the deleted count.
+
+    Silent when the prefix is already empty. Used by account deletion to
+    purge the `{user_id}/` prefix in the media + exports buckets.
+    """
+    total = 0
+    while True:
+        keys = await list_objects(bucket, prefix, limit=1000, offset=0)
+        if not keys:
+            break
+        for key in keys:
+            await delete_object(bucket, key)
+            total += 1
+    _logger.info("storage.prefix_deleted", bucket=bucket, prefix=prefix, count=total)
+    return total

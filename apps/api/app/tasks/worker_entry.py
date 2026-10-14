@@ -257,8 +257,23 @@ class DeleteUserPayload(BaseModel):
 
 @router.post("/delete_user", status_code=status.HTTP_200_OK)
 async def delete_user_task(payload: DeleteUserPayload) -> dict[str, str]:
-    _logger.warning("worker.delete_user.stub", user_id=payload.user_id)
-    return {"status": "stub", "user_id": payload.user_id}
+    """Purge a user per PRD F5.7: storage → vectors → DB cascade → auth.
+
+    Raises 500 on any failure so Cloud Tasks retries; the purge itself is
+    idempotent (missing rows / 404 auth user / empty prefixes are success).
+    """
+    # Deferred import — keeps the worker-only purge off the api import
+    # graph until this route actually runs.
+    from app.services.users.deletion import delete_user_account
+
+    try:
+        return await delete_user_account(payload.user_id)
+    except Exception as e:
+        _logger.exception("worker.delete_user.failed", user_id=payload.user_id, err=str(e))
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"delete_user_failed: {e}",
+        ) from e
 
 
 class CategoryBackfillPayload(BaseModel):
