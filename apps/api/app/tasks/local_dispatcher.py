@@ -57,11 +57,14 @@ async def dispatch_local(task_type: str, payload: dict[str, str | int | float]) 
         return
 
     if task_type == "category_backfill":
-        _logger.info(
-            "task.local.category_backfill_stub",
-            category_id=payload.get("category_id"),
-            note="backfill classifier not yet implemented",
-        )
+        from app.services.categories.backfill import backfill_category
+
+        category_id = str(payload.get("category_id") or "")
+        user_id = str(payload.get("user_id") or "")
+        if not category_id or not user_id:
+            _logger.warning("task.local.category_backfill_missing_fields", payload=payload)
+            return
+        await backfill_category(category_id, user_id)
         return
 
     _logger.warning("task.local.unknown_type", task_type=task_type)

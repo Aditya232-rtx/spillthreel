@@ -282,10 +282,30 @@ class CategoryBackfillPayload(BaseModel):
 
 
 @router.post("/category_backfill", status_code=status.HTTP_200_OK)
-async def category_backfill_task(payload: CategoryBackfillPayload) -> dict[str, str]:
-    _logger.warning(
-        "worker.category_backfill.stub",
-        category_id=payload.category_id,
-        user_id=payload.user_id,
-    )
-    return {"status": "stub", "category_id": payload.category_id}
+async def category_backfill_task(
+    payload: CategoryBackfillPayload,
+) -> dict[str, str | int]:
+    """Backfill a new user category over the user's existing items.
+
+    Raises 500 on transient errors so Cloud Tasks retries; the backfill
+    itself is idempotent (skips existing rows + ON CONFLICT DO NOTHING).
+    A missing category (deleted before the task ran) returns 200 with
+    status `missing` — not retryable into existence.
+    """
+    # Deferred import — keeps the backfill off the api import graph until
+    # this route actually runs.
+    from app.services.categories.backfill import backfill_category
+
+    try:
+        return await backfill_category(payload.category_id, payload.user_id)
+    except Exception as e:
+        _logger.exception(
+            "worker.category_backfill.failed",
+            category_id=payload.category_id,
+            user_id=payload.user_id,
+            err=str(e),
+        )
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"category_backfill_failed: {e}",
+        ) from e
