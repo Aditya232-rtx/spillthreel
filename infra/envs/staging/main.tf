@@ -65,11 +65,15 @@ locals {
   }
 
   # Extractor keys are worker-only (least privilege — api never sees them).
+  # NOTE(2026-10-14 staging apply): SCRAPECREATORS_API_KEY shell is kept in
+  # local.secret_ids but NOT mapped into the worker revision yet — the secret
+  # has no versions (human hasn't signed up) and Cloud Run rejects a revision
+  # referencing version "latest" with zero versions. Re-add the one line
+  # below once a value exists (see residuals in apply report).
   worker_secret_env = merge(local.secret_env, {
-    SCRAPECREATORS_API_KEY = "SCRAPECREATORS_API_KEY"
-    APIFY_API_TOKEN        = "APIFY_API_TOKEN"
-    BRIGHTDATA_API_TOKEN   = "BRIGHTDATA_API_TOKEN"
-    YOUTUBE_API_KEY        = "YOUTUBE_API_KEY"
+    APIFY_API_TOKEN      = "APIFY_API_TOKEN"
+    BRIGHTDATA_API_TOKEN = "BRIGHTDATA_API_TOKEN"
+    YOUTUBE_API_KEY      = "YOUTUBE_API_KEY"
   })
 }
 
