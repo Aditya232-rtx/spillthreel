@@ -126,11 +126,16 @@ class GeminiSummaryModel:
             raise RuntimeError("gemini returned empty response")
 
         summary = _structured_summary_from_text(text)
+        # Cost visibility (TRD §14.3 honest minimal): estimated USD per
+        # call. Deferred import keeps the api import graph lean.
+        from app.services.llm.budget import estimate_summarize_cost_usd
+
         _logger.info(
             "llm.gemini.summarized",
             model=self._model,
             frames=len(frames),
             title=summary.title[:60],
+            estimated_usd=estimate_summarize_cost_usd(len(frames), audio is not None),
         )
         return summary
 
@@ -221,12 +226,15 @@ class GeminiSummaryModel:
             raise RuntimeError("gemini returned empty response")
 
         summary = _structured_summary_from_text(text)
+        from app.services.llm.budget import estimate_summarize_cost_usd
+
         _logger.info(
             "llm.gemini.summarized_youtube",
             model=self._model,
             url=url,
             resolution=resolution,
             title=summary.title[:60],
+            estimated_usd=estimate_summarize_cost_usd(0, False),
         )
         return summary
 

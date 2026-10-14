@@ -143,5 +143,13 @@ class GeminiAnswerModel:
             raise RuntimeError("answer model returned invalid JSON") from e
 
         result = AnswerResult.model_validate(payload)
-        _logger.info("llm.answer.generated", model=self._model, hits=len(hits))
+        _logger.info(
+            "llm.answer.generated",
+            model=self._model,
+            hits=len(hits),
+            estimated_usd=round(
+                0.002 + len(hits) * 0.0001 + 0.00005,
+                6,
+            ),
+        )
         return result

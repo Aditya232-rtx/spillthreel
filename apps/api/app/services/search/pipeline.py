@@ -31,6 +31,7 @@ from app.services.llm.answer import (
     AnswerModel,
     GeminiAnswerModel,
 )
+from app.services.llm.budget import check_search_budget
 from app.services.memory.base import MemoryHit, SearchFilters
 from app.services.memory.pgvector_store import PgVectorStore
 
@@ -151,6 +152,12 @@ async def search(
     started = time.perf_counter()
     query_hash = hashlib.sha256(query.encode("utf-8")).hexdigest()[:16]
     active_answerer: AnswerModel = answerer if answerer is not None else GeminiAnswerModel()
+
+    # Cost pre-flight (TRD §14.3 honest minimal): hard per-request cap +
+    # estimated-cost log line. BudgetExceededError bubbles to the route (→ 429).
+    # True daily cumulative enforcement is deferred to a usage-table
+    # migration (see services/llm/budget.py).
+    check_search_budget(query, top_k, user_id)
 
     # 1. Retrieve (user-scoped inside the store) under the embed+pg budget.
     active_store: Retriever = store if store is not None else PgVectorStore(await get_pg_pool())

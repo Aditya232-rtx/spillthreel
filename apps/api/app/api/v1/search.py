@@ -23,6 +23,7 @@ from pydantic import BaseModel, Field
 from app.auth.middleware import CurrentUser, DbSession
 from app.observability.logging import get_logger
 from app.ratelimit import limiter
+from app.services.llm.budget import BudgetExceededError
 from app.services.memory.base import SearchFilters
 from app.services.search.pipeline import (
     SearchResponse,
@@ -79,6 +80,12 @@ async def search_saves(
 
     try:
         return await search(query, filters, user.id, body.top_k, session=session)
+    except BudgetExceededError as e:
+        _logger.warning("search.budget_exceeded", user_id=user.id, reason=str(e))
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="gemini budget exceeded",
+        ) from e
     except SearchTimeoutError as e:
         _logger.warning("search.llm_timeout", user_id=user.id)
         raise HTTPException(
