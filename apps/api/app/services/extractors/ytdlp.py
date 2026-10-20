@@ -18,6 +18,7 @@ import tempfile
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 from app.observability.logging import get_logger
 from app.services.extractors.base import (
@@ -26,6 +27,7 @@ from app.services.extractors.base import (
     Owner,
     Platform,
 )
+from app.services.ingest.platform_detect import UnsupportedPlatformError, detect_platform
 
 _logger = get_logger(__name__)
 
@@ -44,26 +46,52 @@ def _lazy_import_ytdlp() -> Any:
     return _yt_dlp
 
 
-def _outbound_proxy() -> str | None:
-    """Egress proxy URL when configured, else None.
+def _extractor_proxy() -> str | None:
+    """Controlled extractor egress proxy URL when configured, else None.
 
-    Env ``OUTBOUND_PROXY_URL`` first, then settings ``outbound_proxy_url``
-    (same precedence as the Part D scraper providers). The value is only
-    ever passed to yt-dlp's ``proxy`` option — never logged (it may embed
-    `user:pass@` credentials).
+    Env ``EXTRACTOR_EGRESS_PROXY_URL`` first, then settings
+    ``extractor_egress_proxy_url``. This is intentionally separate from
+    ``OUTBOUND_PROXY_URL`` which configures paid provider API calls only.
+    The value is only passed to yt-dlp's ``proxy`` option — never logged
+    (it may embed `user:pass@` credentials).
     """
-    raw = os.environ.get("OUTBOUND_PROXY_URL", "").strip()
+    raw = os.environ.get("EXTRACTOR_EGRESS_PROXY_URL", "").strip()
     if raw:
         return raw
     try:
         from app.settings import get_settings
 
-        value = getattr(get_settings(), "outbound_proxy_url", None)
+        value = getattr(get_settings(), "extractor_egress_proxy_url", None)
         if isinstance(value, str) and value.strip():
             return value.strip()
     except Exception:
         pass
     return None
+
+
+def _validate_proxy(proxy: str) -> str:
+    """Reject malformed proxy values instead of relying on downloader fallback.
+
+    A proxy URL is not itself proof of an egress policy; deployment must
+    configure a policy-enforcing proxy and deny direct worker egress. This
+    check only ensures the option is an explicit HTTP(S) proxy endpoint.
+    """
+    try:
+        parsed = urlsplit(proxy)
+        port = parsed.port
+    except ValueError:
+        raise ExtractorError("yt-dlp extractor proxy configuration is invalid") from None
+    if (
+        parsed.scheme not in {"http", "https"}
+        or not parsed.hostname
+        or parsed.path not in {"", "/"}
+        or parsed.query
+        or parsed.fragment
+        or any(ch.isspace() for ch in proxy)
+        or (port is not None and not 1 <= port <= 65535)
+    ):
+        raise ExtractorError("yt-dlp extractor proxy configuration is invalid")
+    return proxy
 
 
 class YtDlpExtractor:
@@ -73,9 +101,22 @@ class YtDlpExtractor:
         self.platform: Platform = platform
 
     async def can_handle(self, url: str) -> bool:
-        return True
+        try:
+            return detect_platform(url) == self.platform
+        except (UnsupportedPlatformError, ValueError):
+            return False
 
     async def extract(self, url: str) -> ExtractResult:
+        if not await self.can_handle(url):
+            raise ExtractorError("yt-dlp URL does not match the configured platform")
+        configured_proxy = _extractor_proxy()
+        if not configured_proxy:
+            # yt-dlp resolves and fetches both metadata and media itself. It
+            # does not use the pinned-DNS downloader, so direct egress is
+            # disabled until a controlled outbound proxy is configured.
+            raise ExtractorError("yt-dlp extraction requires EXTRACTOR_EGRESS_PROXY_URL")
+        proxy = _validate_proxy(configured_proxy)
+
         yt_dlp = _lazy_import_ytdlp()
         tmp_dir = Path(tempfile.mkdtemp(prefix="spillthereel-ytdlp-"))
         outtmpl = str(tmp_dir / "source.%(ext)s")
@@ -94,16 +135,16 @@ class YtDlpExtractor:
             "nocheckcertificate": False,
             "socket_timeout": 30,
         }
-        proxy = _outbound_proxy()
-        if proxy:
-            ydl_opts["proxy"] = proxy
+        ydl_opts["proxy"] = proxy
 
         # yt-dlp is synchronous — offload to a thread so we don't block
         # the event loop for the ~5-30s a download can take.
         try:
             info, video_path = await asyncio.to_thread(_run_ytdlp, yt_dlp, ydl_opts, url)
         except Exception as e:  # yt-dlp throws many concrete types
-            raise ExtractorError(f"yt-dlp failed: {e}") from e
+            # yt-dlp exception text can include the signed source URL and
+            # proxy credentials. Keep the failure class for diagnosis only.
+            raise ExtractorError(f"yt-dlp failed ({type(e).__name__})") from None
 
         owner = None
         uploader = info.get("uploader") or info.get("channel")

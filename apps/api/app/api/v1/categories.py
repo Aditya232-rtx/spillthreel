@@ -16,7 +16,7 @@ from sqlalchemy.exc import IntegrityError
 from app.auth.middleware import CurrentUser, DbSession
 from app.db.models import Category, ItemCategory
 from app.observability.logging import get_logger
-from app.tasks.enqueue import enqueue_task
+from app.tasks.outbox import dispatch_after_commit, record_task_intent
 
 router = APIRouter()
 _logger = get_logger(__name__)
@@ -89,6 +89,13 @@ async def create_category(
         emoji=body.emoji,
     )
     session.add(category)
+    outbox_row = await record_task_intent(
+        session,
+        "category_backfill",
+        {"category_id": category.id, "user_id": user.id},
+        target_type="category",
+        target_id=category.id,
+    )
     try:
         await session.commit()
     except IntegrityError as e:
@@ -104,13 +111,8 @@ async def create_category(
         ) from e
     await session.refresh(category)
 
-    # Kick off the backfill classifier — server-side job scans the user's
-    # existing items and inserts matching item_categories rows (TRD §8b.4).
-    await enqueue_task(
-        "category_backfill",
-        {"category_id": category.id, "user_id": user.id},
-        dedup_key=f"backfill-{category.id}",
-    )
+    # The task intent committed atomically with the new category.
+    await dispatch_after_commit([outbox_row.id])
 
     _logger.info(
         "categories.created",

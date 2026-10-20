@@ -37,7 +37,7 @@ from app.services.ingest.platform_detect import (
     detect_platform,
     normalize_url,
 )
-from app.tasks.enqueue import enqueue_task
+from app.tasks.outbox import dispatch_after_commit, ensure_existing_intent, record_task_intent
 
 router = APIRouter()
 _logger = get_logger(__name__)
@@ -59,6 +59,14 @@ class SaveResponse(BaseModel):
     model_config = {"populate_by_name": True}
 
 
+def _validate_save_url(url: AnyUrl) -> str:
+    """Return the supported platform only for HTTPS save targets."""
+    platform = detect_platform(str(url))
+    if url.scheme.lower() != "https":
+        raise UnsupportedPlatformError("URL must use HTTPS")
+    return platform
+
+
 @router.post("/saves", response_model=SaveResponse, status_code=status.HTTP_201_CREATED)
 @limiter.limit(saves_limit)
 async def create_save(
@@ -69,7 +77,10 @@ async def create_save(
 ) -> SaveResponse:
     url_str = str(body.url)
     try:
-        platform = detect_platform(url_str)
+        # Saves are later fetched by an extractor. Keep the accepted input
+        # contract HTTPS-only so an attacker cannot rely on an HTTP upgrade
+        # or downgrade redirect to change the server-side fetch destination.
+        platform = _validate_save_url(body.url)
     except UnsupportedPlatformError as e:
         _logger.info("saves.rejected_unsupported", url=url_str, reason=str(e), user_id=user.id)
         raise HTTPException(
@@ -112,17 +123,30 @@ async def create_save(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail="dedup lookup failed",
             )
+        outbox_row = None
+        if existing.state == "queued":
+            outbox_row = await ensure_existing_intent(
+                session,
+                "ingest",
+                {"item_id": existing.id, "user_id": user.id},
+                target_type="item",
+                target_id=existing.id,
+            )
         await session.commit()
+        if outbox_row is not None:
+            await dispatch_after_commit([outbox_row.id])
         _logger.info("saves.duplicate", user_id=user.id, item_id=existing.id, url_norm=normalized)
         return SaveResponse(item_id=existing.id, state=existing.state, duplicate_of=existing.id)
 
-    await session.commit()
-
-    await enqueue_task(
+    outbox_row = await record_task_intent(
+        session,
         "ingest",
         {"item_id": inserted_id, "user_id": user.id},
-        dedup_key=f"ingest-{inserted_id}",
+        target_type="item",
+        target_id=inserted_id,
     )
+    await session.commit()
+    await dispatch_after_commit([outbox_row.id])
     _logger.info(
         "saves.created",
         user_id=user.id,

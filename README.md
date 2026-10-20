@@ -2,8 +2,22 @@
 
 **Turn doomscrolling into instant recall.** A mobile "second brain" for saved
 short-form content: share any Reel / Short / TikTok / X post into the app and
-find it later in natural language ("the ramen recipe with miso"). Bulk-import
-your entire Instagram save history from Meta's data export in one step.
+find it later in natural language ("the ramen recipe with miso"). Import saved
+history from supported exports within your account's one-time bulk allowance.
+
+## Current execution plan
+
+Start with [the Luna implementation plan](docs/LUNA_IMPLEMENTATION_PLAN.md) and
+[the copy-paste execution prompt](docs/LUNA_START_PROMPT.md). The
+[current-state review](docs/PROJECT_REVIEW_2026-10-16.md) distinguishes implemented
+code from unverified device/cloud behavior; the
+[native design brief](docs/DESIGN_EXECUTION_BRIEF.md) guides the UI work.
+[AGENT_SETUP.md](docs/AGENT_SETUP.md) records the installed agents, Impeccable skill
+and MCP connection status. `HANDOFF.md` is historical.
+
+Full ingestion is deliberate. Free bulk import is 150 Instagram items plus 100
+pooled across other supported apps, once per account; Premium is 1,000 total once
+per account. These policies still require implementation as detailed in the plan.
 
 ## Monorepo map
 
@@ -11,15 +25,17 @@ your entire Instagram save history from Meta's data export in one step.
 spillthereel/
   apps/mobile/        Expo SDK 57 + React Native app (Android first; no iOS yet)
   apps/api/           FastAPI backend (uv, ruff, mypy, pytest)
-  infra/              Terraform — staging only, NEVER applied yet
-  docs/               PRD, TRD, architecture, build phases, oauth-setup
+  infra/              Terraform — staging definitions; live state needs verification
+  docs/               Execution plan, review, design brief, tooling, oauth-setup
   scripts/            local-dev.sh — one-command local stack
-  docker-compose.yml  Local Postgres + API + worker
+  docker-compose.yml  Local Postgres + API + worker + outbox dispatcher
   .github/workflows/  api-ci, mobile-ci, terraform-plan, eas-preview (manual)
 ```
 
-Product and technical contracts live in [`docs/`](docs/): `prd.md`, `trd.md`,
-`architecture.md`, `buildphase.md`, `design-system.md`, plus
+Original product and technical references live at the repository root:
+[`prd.md`](prd.md), [`trd.md`](trd.md), [`architecture.md`](architecture.md),
+[`buildphase.md`](buildphase.md), [`design-system.md`](design-system.md). Their dated
+overrides point to the current execution plan. See also
 [`docs/oauth-setup.md`](docs/oauth-setup.md) for the manual Auth steps.
 
 ## Prerequisites

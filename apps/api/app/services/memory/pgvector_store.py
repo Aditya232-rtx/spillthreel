@@ -16,6 +16,7 @@ from pgvector.asyncpg import register_vector
 
 from app.observability.logging import get_logger
 from app.services.memory.base import IndexedItem, MemoryHit, SearchFilters
+from app.tasks.worker_claims import WorkerLease
 
 _logger = get_logger(__name__)
 
@@ -23,6 +24,77 @@ _logger = get_logger(__name__)
 # truncation; we request 768 explicitly (cheaper storage + index, plenty
 # for short-form captions/transcripts). The migration pins vector(768).
 EMBEDDING_DIM = 768
+
+
+async def _lease_current_raw(
+    conn: Any, lease: WorkerLease, user_id: str, item_id: str
+) -> tuple[bool, tuple[str, ...]]:
+    """Lock and verify publication fence in the same raw-asyncpg transaction.
+
+    Return only predicate names on failure. These are safe to persist for
+    diagnosis: never include a lease token, owner/item identifier, or content.
+    Lease expiry is compared with the database clock so the publication fence
+    does not depend on worker-host clock skew.
+    """
+    profile = await conn.fetchrow(
+        "SELECT deleted_at FROM profiles WHERE id = $1 FOR UPDATE", user_id
+    )
+    item = await conn.fetchrow(
+        """SELECT user_id, worker_lease_token, worker_lease_until,
+                  worker_task_type, worker_generation
+           FROM items WHERE id = $1 FOR UPDATE""",
+        item_id,
+    )
+    job = await conn.fetchrow(
+        """SELECT task_type, target_type, target_id, generation, execution_status
+           FROM task_outbox WHERE id = $1 FOR UPDATE""",
+        lease.identity.outbox_id,
+    )
+    latest_generation = await conn.fetchval(
+        """SELECT max(generation) FROM task_outbox
+           WHERE task_type = $1 AND target_type = $2 AND target_id = $3""",
+        lease.identity.task_type,
+        lease.identity.target_type,
+        item_id,
+    )
+    database_now = await conn.fetchval("SELECT clock_timestamp()")
+    checks = {
+        "profile_missing": profile is not None,
+        "profile_deleted": profile is not None and profile["deleted_at"] is None,
+        "item_missing": item is not None,
+        # SQLAlchemy is configured with UUID(as_uuid=False), but raw asyncpg
+        # returns UUID columns as uuid.UUID. Normalize at this driver boundary
+        # so the same owner identity compares consistently across both paths.
+        "item_owner_mismatch": (
+            item is not None and str(item["user_id"]) == str(user_id)
+        ),
+        "lease_token_mismatch": item is not None and item["worker_lease_token"] == lease.token,
+        "lease_expiry_missing": item is not None and item["worker_lease_until"] is not None,
+        "lease_expired": (
+            item is not None
+            and item["worker_lease_until"] is not None
+            and item["worker_lease_until"] > database_now
+        ),
+        "lease_task_mismatch": (
+            item is not None and item["worker_task_type"] == lease.identity.task_type
+        ),
+        "lease_generation_mismatch": (
+            item is not None and item["worker_generation"] == lease.identity.generation
+        ),
+        "outbox_missing": job is not None,
+        "outbox_task_mismatch": job is not None and job["task_type"] == lease.identity.task_type,
+        "outbox_target_type_mismatch": (
+            job is not None and job["target_type"] == lease.identity.target_type
+        ),
+        "outbox_target_mismatch": job is not None and job["target_id"] == item_id,
+        "outbox_generation_mismatch": (
+            job is not None and job["generation"] == lease.identity.generation
+        ),
+        "outbox_not_pending": job is not None and job["execution_status"] == "pending",
+        "latest_generation_mismatch": latest_generation == lease.identity.generation,
+    }
+    failed = tuple(name for name, passed in checks.items() if not passed)
+    return not failed, failed
 
 
 class PgVectorStore:
@@ -49,24 +121,41 @@ class PgVectorStore:
         embeddings: list[list[float]] = await self._model().embed_batch(texts)
         return embeddings
 
-    async def write(self, user_id: str, item: IndexedItem) -> str:
+    async def write(
+        self, user_id: str, item: IndexedItem, *, worker_lease: WorkerLease | None = None
+    ) -> str:
         """Embed one corpus and upsert it. Returns item_id (the row PK)."""
         (embedding,) = await self._embed_texts([item.text_corpus])
         async with self._pool.acquire() as conn:
             await register_vector(conn)
-            await conn.execute(
-                """
-                INSERT INTO item_embeddings (item_id, user_id, embedding, created_at)
-                VALUES ($1, $2, $3, $4)
-                ON CONFLICT (item_id) DO UPDATE SET
-                    embedding = EXCLUDED.embedding,
-                    created_at = EXCLUDED.created_at
-                """,
-                item.item_id,
-                user_id,
-                embedding,
-                datetime.now(UTC),
-            )
+            async with conn.transaction():
+                if worker_lease is not None:
+                    lease_valid, failed_predicates = await _lease_current_raw(
+                        conn, worker_lease, user_id, item.item_id
+                    )
+                    if not lease_valid:
+                        _logger.warning(
+                            "memory.pgvector.publication_fence_rejected",
+                            failed_predicates=list(failed_predicates),
+                        )
+                        # The exception is persisted as item.failure_reason and
+                        # can be returned to the owner. Keep predicate detail in
+                        # access-controlled logs only, not in that user-facing row.
+                        raise RuntimeError("worker lease lost before vector publication")
+                await conn.execute(
+                    """
+                    INSERT INTO item_embeddings (item_id, user_id, embedding, created_at)
+                    VALUES ($1, $2, $3, $4)
+                    ON CONFLICT (item_id) DO UPDATE SET
+                        embedding = EXCLUDED.embedding,
+                        created_at = EXCLUDED.created_at
+                    WHERE item_embeddings.user_id = EXCLUDED.user_id
+                    """,
+                    item.item_id,
+                    user_id,
+                    embedding,
+                    datetime.now(UTC),
+                )
         _logger.info("memory.pgvector.wrote", user_id=user_id, item_id=item.item_id)
         return item.item_id
 

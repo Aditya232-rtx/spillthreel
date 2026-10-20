@@ -20,13 +20,21 @@ ON CONFLICT (id) DO NOTHING;
 
 -- Storage object policies — objects are keyed as `{user_id}/…` so we
 -- use storage.foldername(name)[1] to scope by owner.
-CREATE POLICY media_select_own   ON storage.objects FOR SELECT USING (bucket_id = 'media'   AND (storage.foldername(name))[1] = auth.uid()::text);
-CREATE POLICY media_insert_own   ON storage.objects FOR INSERT WITH CHECK (bucket_id = 'media' AND (storage.foldername(name))[1] = auth.uid()::text);
-CREATE POLICY media_update_own   ON storage.objects FOR UPDATE USING (bucket_id = 'media'   AND (storage.foldername(name))[1] = auth.uid()::text);
-CREATE POLICY media_delete_own   ON storage.objects FOR DELETE USING (bucket_id = 'media'   AND (storage.foldername(name))[1] = auth.uid()::text);
-CREATE POLICY exports_select_own ON storage.objects FOR SELECT USING (bucket_id = 'exports' AND (storage.foldername(name))[1] = auth.uid()::text);
-CREATE POLICY exports_insert_own ON storage.objects FOR INSERT WITH CHECK (bucket_id = 'exports' AND (storage.foldername(name))[1] = auth.uid()::text);
-CREATE POLICY exports_update_own ON storage.objects FOR UPDATE USING (bucket_id = 'exports' AND (storage.foldername(name))[1] = auth.uid()::text);
-CREATE POLICY exports_delete_own ON storage.objects FOR DELETE USING (bucket_id = 'exports' AND (storage.foldername(name))[1] = auth.uid()::text);
+DROP POLICY IF EXISTS media_select_own ON storage.objects;
+DROP POLICY IF EXISTS media_insert_own ON storage.objects;
+DROP POLICY IF EXISTS media_update_own ON storage.objects;
+DROP POLICY IF EXISTS media_delete_own ON storage.objects;
+DROP POLICY IF EXISTS exports_select_own ON storage.objects;
+DROP POLICY IF EXISTS exports_insert_own ON storage.objects;
+DROP POLICY IF EXISTS exports_update_own ON storage.objects;
+DROP POLICY IF EXISTS exports_delete_own ON storage.objects;
+CREATE POLICY media_select_own ON storage.objects FOR SELECT USING (bucket_id = 'media' AND (storage.foldername(name))[1] = auth.uid()::text AND EXISTS (SELECT 1 FROM public.profiles p WHERE p.id = auth.uid() AND p.deleted_at IS NULL));
+CREATE POLICY media_insert_own ON storage.objects FOR INSERT WITH CHECK (bucket_id = 'media' AND (storage.foldername(name))[1] = auth.uid()::text AND EXISTS (SELECT 1 FROM public.profiles p WHERE p.id = auth.uid() AND p.deleted_at IS NULL));
+CREATE POLICY media_update_own ON storage.objects FOR UPDATE USING (bucket_id = 'media' AND (storage.foldername(name))[1] = auth.uid()::text AND EXISTS (SELECT 1 FROM public.profiles p WHERE p.id = auth.uid() AND p.deleted_at IS NULL)) WITH CHECK (bucket_id = 'media' AND (storage.foldername(name))[1] = auth.uid()::text AND EXISTS (SELECT 1 FROM public.profiles p WHERE p.id = auth.uid() AND p.deleted_at IS NULL));
+CREATE POLICY media_delete_own ON storage.objects FOR DELETE USING (bucket_id = 'media' AND (storage.foldername(name))[1] = auth.uid()::text AND EXISTS (SELECT 1 FROM public.profiles p WHERE p.id = auth.uid() AND p.deleted_at IS NULL));
+CREATE POLICY exports_select_own ON storage.objects FOR SELECT USING (bucket_id = 'exports' AND (storage.foldername(name))[1] = auth.uid()::text AND EXISTS (SELECT 1 FROM public.profiles p WHERE p.id = auth.uid() AND p.deleted_at IS NULL));
+CREATE POLICY exports_insert_own ON storage.objects FOR INSERT WITH CHECK (bucket_id = 'exports' AND (storage.foldername(name))[1] = auth.uid()::text AND EXISTS (SELECT 1 FROM public.profiles p WHERE p.id = auth.uid() AND p.deleted_at IS NULL));
+CREATE POLICY exports_update_own ON storage.objects FOR UPDATE USING (bucket_id = 'exports' AND (storage.foldername(name))[1] = auth.uid()::text AND EXISTS (SELECT 1 FROM public.profiles p WHERE p.id = auth.uid() AND p.deleted_at IS NULL)) WITH CHECK (bucket_id = 'exports' AND (storage.foldername(name))[1] = auth.uid()::text AND EXISTS (SELECT 1 FROM public.profiles p WHERE p.id = auth.uid() AND p.deleted_at IS NULL));
+CREATE POLICY exports_delete_own ON storage.objects FOR DELETE USING (bucket_id = 'exports' AND (storage.foldername(name))[1] = auth.uid()::text AND EXISTS (SELECT 1 FROM public.profiles p WHERE p.id = auth.uid() AND p.deleted_at IS NULL));
 
 COMMIT;

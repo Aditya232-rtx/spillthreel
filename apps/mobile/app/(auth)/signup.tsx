@@ -17,7 +17,7 @@ const LOGO_SOURCE = require('../../assets/images/logo-mark-transparent.png');
 
 export default function SignupScreen() {
   const router = useRouter();
-  const { signUpWithPassword, signInWithOAuth } = useAuth();
+  const { signUpWithPassword, signInWithOAuth, signInWithPassword } = useAuth();
   const [name, setName] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -75,10 +75,7 @@ export default function SignupScreen() {
       // prove ownership: sign in with the credentials just entered. The
       // user typed this password seconds ago, so success unambiguously
       // means the account pre-existed — sign them in and continue.
-      const { data: retry } = await supabase.auth.signInWithPassword({
-        email: email.trim(),
-        password,
-      });
+      const retry = await signInWithPassword(email.trim(), password);
       if (retry.session) {
         // Existing account: apply the freshly typed name if it differs
         // from what's stored, otherwise the greeting keeps showing the

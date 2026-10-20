@@ -63,8 +63,15 @@ def _client_with(session: _FakeSession, monkeypatch: Any) -> tuple[TestClient, A
     async def _override_session() -> AsyncIterator[_FakeSession]:
         yield session
 
+    from types import SimpleNamespace
+
     mock_enqueue = AsyncMock()
-    monkeypatch.setattr(categories_module, "enqueue_task", mock_enqueue)
+    monkeypatch.setattr(categories_module, "dispatch_after_commit", mock_enqueue)
+    monkeypatch.setattr(
+        categories_module,
+        "record_task_intent",
+        AsyncMock(return_value=SimpleNamespace(id="outbox")),
+    )
 
     app = create_app()
     app.dependency_overrides[_current_user] = _override_user
@@ -107,7 +114,4 @@ class TestCreateCategoryErrors:
         body = resp.json()
         assert body["name"] == "HOBBY"
         assert body["item_count"] == 0
-        mock_enqueue.assert_awaited_once()
-        args, _kwargs = mock_enqueue.call_args
-        assert args[0] == "category_backfill"
-        assert args[1]["user_id"] == _TEST_USER_ID
+        mock_enqueue.assert_awaited_once_with(["outbox"])

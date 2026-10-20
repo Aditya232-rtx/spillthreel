@@ -16,10 +16,17 @@ from unittest.mock import AsyncMock
 
 import anyio
 import pytest
+from fastapi import HTTPException
 from pydantic import ValidationError
+from sqlalchemy.dialects import postgresql
 
 from app.api.v1.events import event_stream
-from app.api.v1.notifications import TokenRequest, register_token
+from app.api.v1.notifications import (
+    TokenRequest,
+    TokenUnregisterRequest,
+    register_token,
+    unregister_token,
+)
 from app.db.models import IngestionEvent, Profile
 
 _USER_ID = "11111111-1111-1111-1111-111111111111"
@@ -44,6 +51,9 @@ class _FakeResult:
     def scalars(self) -> _FakeScalars:
         return _FakeScalars(self._rows)
 
+    def scalar_one_or_none(self) -> Any:
+        return self._rows[0] if self._rows else None
+
 
 def _session_with(*batches: list[Any]) -> AsyncMock:
     """AsyncMock session whose execute() returns one batch per call, then empty."""
@@ -56,6 +66,7 @@ def _session_with(*batches: list[Any]) -> AsyncMock:
         return _FakeResult([])
 
     session.execute.side_effect = _execute
+    session.scalar.return_value = _USER_ID
     return session
 
 
@@ -93,10 +104,14 @@ class TestTokenRequestValidation:
         with pytest.raises(ValidationError):
             TokenRequest(token="abc", platform="web")  # type: ignore[arg-type]
 
+    def test_invalid_previous_token_rejected(self) -> None:
+        with pytest.raises(ValidationError):
+            TokenRequest(token="new", platform="ios", previous_token="")
+
 
 class TestRegisterToken:
     async def test_upsert_returns_ok_and_commits(self) -> None:
-        session = _session_with([])
+        session = _session_with([(_USER_ID, "ExponentPushToken[abc]")])
         resp = await register_token(
             body=TokenRequest(token="ExponentPushToken[abc]", platform="expo"),
             user=_user(),
@@ -106,17 +121,121 @@ class TestRegisterToken:
         session.execute.assert_awaited_once()
         session.commit.assert_awaited_once()
 
-    async def test_upsert_targets_user_token_conflict(self) -> None:
-        session = _session_with([])
+    async def test_upsert_targets_global_token_without_cross_owner_transfer(self) -> None:
+        session = _session_with([(_USER_ID, "tok-1")])
         await register_token(
             body=TokenRequest(token="tok-1", platform="ios"),
             user=_user(),
             session=session,  # type: ignore[arg-type]
         )
         stmt = session.execute.call_args[0][0]
-        sql = str(stmt).upper()
-        assert "ON CONFLICT" in sql and "DO UPDATE" in sql
-        assert "PUSH_TOKENS" in sql
+        compiled = stmt.compile(dialect=postgresql.dialect())
+        sql = str(compiled).lower()
+        assert "on conflict (token) do update" in sql
+        assert "user_id =" in sql
+        assert "platform =" in sql
+        assert "created_at =" in sql
+        assert "where push_tokens.user_id =" in sql
+        assert "on conflict (user_id, token)" not in sql
+        # The insert owner is the authenticated caller, while the conflict
+        # predicate permits refresh only when the existing row has that owner.
+        assert _USER_ID in compiled.params.values()
+
+    async def test_rotation_removes_only_the_calling_users_old_token(self) -> None:
+        session = _session_with([], [(_USER_ID, "ExponentPushToken[new]")])
+        response = await register_token(
+            body=TokenRequest(
+                token="ExponentPushToken[new]",
+                previous_token="ExponentPushToken[old]",
+                platform="ios",
+            ),
+            user=_user(),
+            session=session,  # type: ignore[arg-type]
+        )
+
+        assert response.ok is True
+        assert session.execute.await_count == 2
+        delete_sql = str(session.execute.call_args_list[0].args[0]).lower()
+        assert "delete from push_tokens" in delete_sql
+        assert "push_tokens.user_id" in delete_sql
+        assert "push_tokens.token" in delete_sql
+        upsert = session.execute.call_args_list[1].args[0]
+        upsert_sql = str(upsert.compile(dialect=postgresql.dialect())).lower()
+        assert "on conflict (token) do update" in upsert_sql
+        session.commit.assert_awaited_once()
+
+    async def test_same_token_rotation_does_not_delete_before_upsert(self) -> None:
+        session = _session_with([(_USER_ID, "tok-1")])
+        await register_token(
+            body=TokenRequest(
+                token="tok-1", previous_token="tok-1", platform="android"
+            ),
+            user=_user(),
+            session=session,  # type: ignore[arg-type]
+        )
+        assert session.execute.await_count == 1
+
+    async def test_conflict_owned_by_another_account_returns_409_and_rolls_back(self) -> None:
+        session = _session_with([])
+        with pytest.raises(HTTPException) as error:
+            await register_token(
+                body=TokenRequest(
+                    token="tok-owned-by-someone-else",
+                    previous_token="old-token",
+                    platform="ios",
+                ),
+                user=_user(),
+                session=session,  # type: ignore[arg-type]
+            )
+
+        assert error.value.status_code == 409
+        assert error.value.detail["code"] == "push_token_owned_by_another_account"
+        assert session.execute.await_count == 2
+        session.rollback.assert_awaited_once()
+        session.commit.assert_not_awaited()
+
+    async def test_rejects_a_deleted_account_before_mutating_tokens(self) -> None:
+        session = _session_with([])
+        session.scalar.return_value = None
+        with pytest.raises(HTTPException) as error:
+            await register_token(
+                body=TokenRequest(token="tok-1", platform="ios"),
+                user=_user(),
+                session=session,  # type: ignore[arg-type]
+            )
+        assert error.value.status_code == 403
+        session.execute.assert_not_awaited()
+        session.commit.assert_not_awaited()
+
+
+class TestUnregisterToken:
+    async def test_unregister_is_owner_scoped_and_idempotent(self) -> None:
+        session = _session_with([])
+        response = await unregister_token(
+            body=TokenUnregisterRequest(token="ExponentPushToken[abc]"),
+            user=_user(),
+            session=session,  # type: ignore[arg-type]
+        )
+
+        assert response.ok is True
+        stmt = session.execute.call_args.args[0]
+        sql = str(stmt).lower()
+        assert "delete from push_tokens" in sql
+        assert "push_tokens.user_id" in sql
+        assert "push_tokens.token" in sql
+        session.commit.assert_awaited_once()
+
+    async def test_missing_account_rejects_unregister(self) -> None:
+        session = _session_with([])
+        session.scalar.return_value = None
+        with pytest.raises(HTTPException) as error:
+            await unregister_token(
+                body=TokenUnregisterRequest(token="tok-1"),
+                user=_user(),
+                session=session,  # type: ignore[arg-type]
+            )
+        assert error.value.status_code == 403
+        session.execute.assert_not_awaited()
 
 
 class TestEventStream:

@@ -15,8 +15,10 @@ resource "google_cloud_tasks_queue" "ingest" {
   }
 
   retry_config {
-    max_attempts       = 3
-    max_retry_duration = "600s"
+    max_attempts = 3
+    # Keep the retry window longer than the 1,500s worker request and 1,800s
+    # per-task dispatch deadline so one long attempt cannot consume it all.
+    max_retry_duration = "3600s"
   }
 }
 

@@ -31,9 +31,15 @@
       "expo-font",
       "expo-secure-store",
       "expo-web-browser",
+      "expo-notifications",
       "@sentry/react-native",
       "expo-localization",
-      "expo-share-intent"
+      [
+        "expo-share-intent",
+        {
+          "androidIntentFilters": ["text/*"]
+        }
+      ]
     ],
     "experiments": {
       "typedRoutes": true

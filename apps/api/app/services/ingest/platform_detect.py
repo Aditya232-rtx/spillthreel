@@ -52,13 +52,26 @@ def detect_platform(url: str) -> Platform:
     Raises UnsupportedPlatformError so `/v1/saves` can return HTTP 400
     (matching PRD F1.7 — surface "not supported yet" back to the user).
     """
-    parsed = urlparse(url)
-    if not parsed.netloc:
-        raise UnsupportedPlatformError(f"no host in url: {url!r}")
+    try:
+        parsed = urlparse(url.strip())
+    except ValueError as exc:
+        raise UnsupportedPlatformError("invalid URL authority") from exc
+    if parsed.scheme.lower() not in {"http", "https"}:
+        raise UnsupportedPlatformError("URL must use HTTP or HTTPS")
+    if parsed.username is not None or parsed.password is not None:
+        raise UnsupportedPlatformError("URL user information is not supported")
+    if parsed.netloc.endswith(":"):
+        raise UnsupportedPlatformError("URL port must not be empty")
+    try:
+        port = parsed.port
+    except ValueError as exc:
+        raise UnsupportedPlatformError("invalid URL authority") from exc
+    if port is not None and port not in {80, 443}:
+        raise UnsupportedPlatformError("nonstandard URL ports are not supported")
 
-    host = parsed.netloc.lower()
-    # strip user:pass@ and :port
-    host = host.rsplit("@", 1)[-1].split(":", 1)[0]
+    host = (parsed.hostname or "").lower().rstrip(".")
+    if not host:
+        raise UnsupportedPlatformError("URL host is required")
 
     for platform, pattern in _PLATFORM_RULES:
         if pattern.search(host):

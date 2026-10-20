@@ -53,11 +53,28 @@ class TestDetectPlatform:
         with pytest.raises(UnsupportedPlatformError):
             detect_platform("not-a-url")
 
+    @pytest.mark.parametrize(
+        "url",
+        [
+            "file://instagram.com/private/path",
+            "ftp://instagram.com/reel/abc",
+            "gopher://www.youtube.com/watch?v=dQw4w9WgXcQ",
+            "https://instagram.com:8443/reel/abc",
+            "https://instagram.com:/reel/abc",
+            "https://[::1",
+            "https://attacker@example.com@instagram.com/reel/abc",
+        ],
+    )
+    def test_rejects_non_web_or_ambiguous_authorities(self, url: str) -> None:
+        with pytest.raises(UnsupportedPlatformError):
+            detect_platform(url)
+
     def test_case_insensitive_host(self) -> None:
         assert detect_platform("https://INSTAGRAM.COM/reel/abc") == "instagram"
 
-    def test_strips_userinfo(self) -> None:
-        assert detect_platform("https://user:pass@instagram.com/reel/abc") == "instagram"
+    def test_rejects_userinfo(self) -> None:
+        with pytest.raises(UnsupportedPlatformError):
+            detect_platform("https://user:pass@instagram.com/reel/abc")
 
 
 class TestNormalizeUrl:

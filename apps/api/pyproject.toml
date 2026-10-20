@@ -41,7 +41,7 @@ dependencies = [
 [project.optional-dependencies]
 worker = [
   # LLM providers
-  "google-genai>=1.3",
+  "google-genai>=2.24.0",
   "groq>=0.14",
   # Media extraction (bundled in worker container only)
   "yt-dlp>=2026.8.19",

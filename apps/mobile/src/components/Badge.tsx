@@ -10,29 +10,32 @@ interface BadgeProps {
   style?: StyleProp<ViewStyle>;
 }
 
-/** Rotated sticker-style badge pill used across Welcome/Login/Signup/Home. */
+/** A small brand accent; keep it secondary to the content and actions. */
 export function Badge({
   label,
-  rotateDeg = 8,
+  rotateDeg = 2,
   background = color.gold,
   textColor = color.ink,
-  shadowOffset = 3,
+  shadowOffset = 1,
   style,
 }: BadgeProps) {
   return (
     <View
+      accessible
+      accessibilityRole="text"
+      accessibilityLabel={label}
       style={[
         {
           transform: [{ rotate: `${rotateDeg}deg` }],
           backgroundColor: background,
-          borderWidth: border.bold,
+          borderWidth: border.hairline,
           borderColor: color.ink,
           borderRadius: radius.pill,
           paddingHorizontal: space.md,
           paddingVertical: space.xs + 2,
           shadowColor: color.ink,
           shadowOffset: { width: shadowOffset, height: shadowOffset },
-          shadowOpacity: 1,
+          shadowOpacity: 0.35,
           shadowRadius: 0,
         },
         style,
@@ -40,9 +43,8 @@ export function Badge({
     >
       <Text
         style={{
-          fontFamily: font.display,
-          fontSize: 10.5,
-          letterSpacing: 0.5,
+          fontFamily: font.body,
+          fontSize: 12,
           color: textColor,
         }}
       >

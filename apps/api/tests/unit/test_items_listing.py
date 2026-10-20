@@ -17,6 +17,7 @@ from fastapi.testclient import TestClient
 from app.auth.middleware import _current_user
 from app.db.engine import get_session
 from app.db.models import Item, Profile
+from app.api.v1.items import _decode_items_cursor, _encode_items_cursor
 from app.main import create_app
 
 _TEST_USER_ID = "user-1"
@@ -53,13 +54,36 @@ class _FakeResult:
 
 
 class _FakeSession:
-    def __init__(self, rows: list[Item]) -> None:
+    def __init__(
+        self,
+        rows: list[Item],
+        *,
+        total_count: int | None = None,
+        page_results: list[list[Item]] | None = None,
+        count_rows: list[Item] | None = None,
+    ) -> None:
         self.rows = rows
+        self.total_count = len(rows) if total_count is None else total_count
+        self.page_results = page_results
+        self.count_rows = count_rows
+        self.page_index = 0
         self.statements: list[Any] = []
+        self.count_statements: list[Any] = []
 
     async def execute(self, stmt: Any) -> _FakeResult:
         self.statements.append(stmt)
-        return _FakeResult(list(self.rows))
+        if self.page_results is None:
+            rows = list(self.rows)
+        else:
+            rows = list(self.page_results[self.page_index])
+            self.page_index += 1
+        return _FakeResult(rows)
+
+    async def scalar(self, stmt: Any) -> int:
+        self.count_statements.append(stmt)
+        if self.count_rows is not None:
+            return sum(row.user_id == _TEST_USER_ID for row in self.count_rows)
+        return self.total_count
 
 
 def _client_with(session: _FakeSession) -> TestClient:
@@ -85,24 +109,93 @@ class TestListItemsCursor:
         body = resp.json()
         assert len(body["items"]) == 1
         assert body["items"][0]["id"] == "item-1"
+        assert body["total_count"] == 1
 
     def test_malformed_cursor_returns_422(self) -> None:
         client = _client_with(_FakeSession([_make_item()]))
 
-        resp = client.get("/v1/items", params={"cursor": "not-a-datetime"})
+        resp = client.get("/v1/items", params={"cursor": "💥"})
 
         assert resp.status_code == 422
         assert resp.json()["detail"] == "invalid cursor"
 
-    def test_valid_cursor_filters(self) -> None:
+    def test_cursor_is_stable_timestamp_and_id_keyset(self) -> None:
+        saved_at = datetime(2026, 10, 2, tzinfo=UTC)
+        cursor = _encode_items_cursor(saved_at, "item-z")
+        decoded_at, decoded_id = _decode_items_cursor(cursor)
+        assert (decoded_at, decoded_id) == (saved_at, "item-z")
+
         session = _FakeSession([])
         client = _client_with(session)
 
-        resp = client.get("/v1/items", params={"cursor": "2026-10-02T00:00:00+00:00"})
+        resp = client.get("/v1/items", params={"cursor": cursor})
 
         assert resp.status_code == 200
-        assert resp.json() == {"items": [], "next_cursor": None}
-        assert "saved_at" in str(session.statements[0])
+        assert resp.json() == {"items": [], "next_cursor": None, "total_count": 0}
+        rendered = str(session.statements[0])
+        assert "saved_at" in rendered
+        assert "items.id" in rendered
+        assert "ORDER BY items.saved_at DESC, items.id DESC" in rendered
+
+    def test_next_cursor_contains_tie_breaker(self) -> None:
+        first = _make_item("item-z")
+        second = _make_item("item-y")
+        client = _client_with(_FakeSession([first, second]))
+
+        resp = client.get("/v1/items", params={"limit": 1})
+
+        assert resp.status_code == 200
+        assert resp.json()["next_cursor"] == _encode_items_cursor(first.saved_at, first.id)
+
+    def test_filtered_total_count_is_stable_across_cursor_pages_and_owner_scoped(self) -> None:
+        first = _make_item("item-z")
+        second = _make_item("item-y")
+        other_owner = _make_item("foreign")
+        other_owner.user_id = "user-2"
+        session = _FakeSession(
+            [first, second],
+            total_count=2,
+            page_results=[[first, second], [second]],
+            count_rows=[first, second, other_owner],
+        )
+        client = _client_with(session)
+
+        first_page = client.get(
+            "/v1/items",
+            params={"limit": 1, "platform": "instagram", "state": "fully_indexed"},
+        )
+        assert first_page.status_code == 200
+        first_body = first_page.json()
+        assert first_body["total_count"] == 2
+        assert first_body["items"][0]["id"] == "item-z"
+
+        second_page = client.get(
+            "/v1/items",
+            params={
+                "limit": 1,
+                "platform": "instagram",
+                "state": "fully_indexed",
+                "cursor": first_body["next_cursor"],
+            },
+        )
+        assert second_page.status_code == 200
+        assert second_page.json()["total_count"] == 2
+        assert second_page.json()["items"][0]["id"] == "item-y"
+
+        count_sql = str(session.count_statements[0])
+        assert "items.user_id" in count_sql
+        assert "items.platform" in count_sql
+        assert "items.state" in count_sql
+        assert "items.saved_at" not in count_sql
+        assert "foreign" not in count_sql
+
+    def test_empty_filtered_result_has_zero_count(self) -> None:
+        client = _client_with(_FakeSession([], total_count=0))
+
+        response = client.get("/v1/items", params={"category_id": "missing-category"})
+
+        assert response.status_code == 200
+        assert response.json() == {"items": [], "next_cursor": None, "total_count": 0}
 
 
 class TestListItemsFilters:

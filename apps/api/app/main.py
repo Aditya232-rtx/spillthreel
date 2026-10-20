@@ -24,13 +24,14 @@ from sentry_sdk.types import Event
 from slowapi.errors import RateLimitExceeded
 
 from app.api import health
-from app.api.v1 import categories, events, imports, items, notifications, saves, search, users
+from app.api.v1 import categories, collections, events, imports, items, notifications, saves, search, users
 from app.observability.logging import configure_logging, get_logger
 from app.ratelimit import (
     DefaultRateLimitMiddleware,
     limiter,
     rate_limit_exceeded_handler,
 )
+from app.request_limits import ImportRequestBodyLimitMiddleware
 from app.settings import get_settings
 from app.tasks import worker_entry
 
@@ -118,12 +119,16 @@ def create_app() -> FastAPI:
     app.state.limiter = limiter
     app.add_exception_handler(RateLimitExceeded, rate_limit_exceeded_handler)  # type: ignore[arg-type]
     app.add_middleware(DefaultRateLimitMiddleware)
+    # FastAPI parses multipart fields before endpoint code can enforce the
+    # individual file cap, so cap the complete import request at ASGI ingress.
+    app.add_middleware(ImportRequestBodyLimitMiddleware)
 
     app.include_router(health.router)
     app.include_router(saves.router, prefix="/v1", tags=["saves"])
     app.include_router(imports.router, prefix="/v1", tags=["imports"])
     app.include_router(items.router, prefix="/v1", tags=["items"])
     app.include_router(categories.router, prefix="/v1", tags=["categories"])
+    app.include_router(collections.router, prefix="/v1", tags=["collections"])
     app.include_router(users.router, prefix="/v1", tags=["users"])
     app.include_router(search.router, prefix="/v1", tags=["search"])
     app.include_router(events.router, prefix="/v1", tags=["events"])

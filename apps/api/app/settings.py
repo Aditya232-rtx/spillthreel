@@ -44,10 +44,11 @@ class Settings(BaseSettings):
             "Public — safe in mobile bundle. RLS gates all access."
         ),
     )
-    supabase_secret_key: str = Field(
-        ...,
+    supabase_secret_key: str | None = Field(
+        default=None,
         description=(
-            "New-format secret API key (sb_secret_…). SECRET — backend only. Bypasses RLS."
+            "New-format secret API key (sb_secret_…). SECRET — backend only. "
+            "Required only by Auth Admin and Storage operations; bypasses RLS."
         ),
     )
     supabase_legacy_jwt_secret: str | None = Field(
@@ -92,10 +93,59 @@ class Settings(BaseSettings):
             "Run runtime SA. Required outside dev when WORKER_BASE_URL is set."
         ),
     )
+    worker_allowed_sa_emails: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Exact Google service-account emails allowed to invoke worker routes. "
+            "Required outside dev; configured as a JSON array."
+        ),
+    )
     worker_base_url: str | None = Field(
         default=None,
         description="Cloud Run worker service URL — Cloud Tasks POSTs here",
     )
+    worker_max_active_items_per_owner: int = Field(
+        default=2,
+        gt=0,
+        le=32,
+        description=(
+            "Maximum concurrently leased ingest/enhance item jobs per active owner. "
+            "Workers return retryable capacity responses until a slot is free."
+        ),
+    )
+
+    # Bulk imports remain fail-closed until the account-history and policy
+    # decisions are explicitly approved and reconciled. These values are
+    # server-only; clients cannot choose a tier or policy.
+    bulk_import_policy_version: str | None = None
+    bulk_import_history_reconciled: bool = False
+    bulk_import_premium_history_mode: Literal["carry_forward", "separate_allowance"] | None = None
+    bulk_import_existing_item_mode: Literal["exclude", "admit"] | None = None
+    bulk_import_manual_share_mode: Literal["exclude", "admit"] | None = None
+    bulk_import_saved_audio_mode: Literal["exclude", "admit"] | None = None
+    # The owner delegated the preview-only retention choice on 2026-10-20:
+    # uncommitted previews expire after one hour, then metadata is purged and
+    # the private ZIP is removed by the existing staging grace/sweeper.
+    # This does not decide retention for completed imports or deletion tombstones.
+    import_preview_retention_policy_version: str | None = "preview-retention-1h-v1"
+    import_preview_ttl_seconds: int | None = Field(
+        default=60 * 60, gt=0, le=7 * 24 * 60 * 60
+    )
+
+    # ---------------- Bulk import archive safety ----------------
+    # These are hard resource ceilings, separate from once-per-account
+    # admission allowances and from any owner-approved retention policy.
+    import_max_upload_bytes: int = Field(default=50 * 1024 * 1024, gt=0, le=200 * 1024 * 1024)
+    import_max_archive_members: int = Field(default=10_000, gt=0, le=50_000)
+    import_max_member_uncompressed_bytes: int = Field(
+        default=64 * 1024 * 1024, gt=0, le=512 * 1024 * 1024
+    )
+    import_max_uncompressed_bytes: int = Field(
+        default=250 * 1024 * 1024, gt=0, le=1024 * 1024 * 1024
+    )
+    import_max_compression_ratio: float = Field(default=200.0, gt=1.0, le=1000.0)
+    import_max_parsed_entries: int = Field(default=10_000, gt=0, le=50_000)
+    import_parse_timeout_seconds: float = Field(default=30.0, gt=0.0, le=120.0)
 
     @field_validator("worker_base_url", mode="before")
     @classmethod
@@ -163,6 +213,17 @@ class Settings(BaseSettings):
     # incompatible with proxying — it egresses direct to allowlisted
     # CDN hosts only.
     outbound_proxy_url: str | None = None
+    # Dedicated policy-enforcing egress proxy required by yt-dlp/gallery-dl.
+    # This is deliberately separate from OUTBOUND_PROXY_URL: that setting is
+    # for fixed paid-provider API endpoints and cannot be treated as an SSRF
+    # boundary for arbitrary source/CDN URLs.
+    extractor_egress_proxy_url: str | None = Field(
+        default=None,
+        description=(
+            "Worker-only, SSRF-enforcing egress proxy for yt-dlp/gallery-dl. "
+            "Extractors fail closed when it is unset."
+        ),
+    )
 
     # ---------------- YouTube native ingest (Part E) ----------------
     youtube_api_key: str | None = None
@@ -171,10 +232,15 @@ class Settings(BaseSettings):
     youtube_gemini_media_resolution: str = "MEDIA_RESOLUTION_LOW"
 
     # ---------------- LLM providers ----------------
+    # `enterprise` uses Vertex with Application Default Credentials;
+    # `vertex_api_key` uses a Google Cloud API key restricted to aiplatform;
+    # `developer_api` uses the AI Studio Gemini Developer API key.
+    gemini_backend: Literal["developer_api", "enterprise", "vertex_api_key"] = "developer_api"
+    gemini_location: str = "global"
     gemini_api_key: str | None = None
-    gemini_model_flash_lite: str = "gemini-2.5-flash-lite"
-    gemini_model_flash: str = "gemini-2.5-flash"
-    gemini_model_pro: str = "gemini-2.5-pro"
+    gemini_model_flash_lite: str = "gemini-3.5-flash-lite"
+    gemini_model_flash: str = "gemini-3.8-flash"
+    gemini_model_pro: str = "gemini-3.1-pro-preview"
 
     groq_api_key: str | None = None
     groq_asr_model: str = "whisper-large-v3-turbo"

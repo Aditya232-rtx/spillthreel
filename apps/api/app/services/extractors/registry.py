@@ -87,22 +87,22 @@ async def extract(url: str) -> ExtractResult:
             if not await extractor.can_handle(url):
                 continue
             return await extractor.extract(url)
-        except SourceGoneError as e:
+        except SourceGoneError:
             _logger.info(
                 "extractor.source_gone",
                 extractor=extractor.__class__.__name__,
                 platform=platform,
-                url=url,
-                err=str(e),
+                error_type="SourceGoneError",
             )
-            raise
+            # Preserve the terminal classification but do not pass an
+            # extractor's message through: providers can echo signed URLs.
+            raise SourceGoneError("source is unavailable or inaccessible") from None
         except ProviderQuotaError as e:
             _logger.error(
                 "extractor.quota",
                 extractor=extractor.__class__.__name__,
                 platform=platform,
-                url=url,
-                err=str(e),
+                error_type=type(e).__name__,
             )
             last_error = e
             continue
@@ -111,10 +111,15 @@ async def extract(url: str) -> ExtractResult:
                 "extractor.failed",
                 extractor=extractor.__class__.__name__,
                 platform=platform,
-                url=url,
-                err=str(e),
+                error_type=type(e).__name__,
             )
             last_error = e
             continue
 
-    raise NoExtractorSucceededError(f"all extractors failed for {url}: last_error={last_error}")
+    # Provider exceptions often include the full source URL (including a
+    # signed query) and sometimes proxy credentials. The public exception
+    # must not echo either; retain only the class for bounded diagnostics.
+    last_error_type = type(last_error).__name__ if last_error is not None else "none"
+    raise NoExtractorSucceededError(
+        f"all extractors failed for {platform}; last_error_type={last_error_type}"
+    )

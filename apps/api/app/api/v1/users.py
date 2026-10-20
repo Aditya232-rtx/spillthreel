@@ -14,10 +14,12 @@ from datetime import UTC, datetime
 
 from fastapi import APIRouter, status
 from pydantic import BaseModel
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from app.auth.middleware import CurrentUser, DbSession
+from app.db.models import UserDeletionJob
 from app.observability.logging import get_logger
-from app.tasks.enqueue import enqueue_task
+from app.tasks.outbox import dispatch_after_commit, record_task_intent
 
 router = APIRouter()
 _logger = get_logger(__name__)
@@ -39,7 +41,19 @@ async def get_me(user: CurrentUser) -> MeResponse:
 @router.delete("/me", status_code=status.HTTP_202_ACCEPTED)
 async def delete_me(user: CurrentUser, session: DbSession) -> dict[str, str]:
     user.deleted_at = datetime.now(UTC)
+    await session.execute(
+        pg_insert(UserDeletionJob)
+        .values(user_id=user.id)
+        .on_conflict_do_nothing(index_elements=[UserDeletionJob.user_id])
+    )
+    outbox_row = await record_task_intent(
+        session,
+        "delete_user",
+        {"user_id": user.id},
+        target_type="user",
+        target_id=user.id,
+    )
     await session.commit()
-    await enqueue_task("delete_user", {"user_id": user.id})
+    await dispatch_after_commit([outbox_row.id])
     _logger.info("users.delete_scheduled", user_id=user.id)
     return {"status": "scheduled"}

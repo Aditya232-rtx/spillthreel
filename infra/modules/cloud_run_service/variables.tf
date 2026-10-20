@@ -48,6 +48,12 @@ variable "concurrency" {
   description = "Requests per instance."
 }
 
+variable "timeout" {
+  type        = string
+  default     = "300s"
+  description = "Maximum request duration for a container instance."
+}
+
 variable "container_port" {
   type        = number
   default     = 8080

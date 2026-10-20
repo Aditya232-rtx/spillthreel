@@ -93,10 +93,10 @@ class TestOidcAudienceOk:
             _oidc_audience_ok(audience, _req(f"https://{_HOST}/work/ingest"), _settings()) is False
         )
 
-    def test_trailing_slash_drift_passes(self) -> None:
+    def test_trailing_slash_route_drift_fails_closed(self) -> None:
         audience = f"https://{_HOST}/work/ingest"
         assert (
-            _oidc_audience_ok(audience, _req(f"https://{_HOST}/work/ingest/"), _settings()) is True
+            _oidc_audience_ok(audience, _req(f"https://{_HOST}/work/ingest/"), _settings()) is False
         )
 
     def test_malformed_audience_fails_closed(self) -> None:

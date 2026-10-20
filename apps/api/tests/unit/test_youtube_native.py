@@ -24,6 +24,7 @@ from app.services.extractors.base import ExtractResult, Owner
 from app.services.ingest.pipeline import PipelineError, _RunContext
 from app.services.llm.base import StructuredSummary
 from app.services.media.ffmpeg import MediaProbe
+from app.tasks.worker_claims import WorkerIdentity, WorkerLease
 
 _TEST_USER_ID = "user-yt-1"
 _VIDEO_ID = "dQw4w9WgXcQ"
@@ -46,6 +47,15 @@ def _make_item(source_url: str, item_id: str = "yt-item-1") -> Item:
 
 def _make_ctx(item: Item, tmp_path: Path) -> _RunContext:
     return _RunContext(item_id=item.id, user_id=item.user_id, workdir=tmp_path)
+
+
+def _lease(item: Item) -> WorkerLease:
+    return WorkerLease(
+        WorkerIdentity("job-yt-test", "ingest", "item", item.id, 1),
+        item.id,
+        item.user_id,
+        "synthetic-worker-token",
+    )
 
 
 def _make_summary(duration: float = 270.0) -> StructuredSummary:
@@ -213,14 +223,14 @@ def _patch_tail(monkeypatch: pytest.MonkeyPatch, model: _FakeSummaryModel) -> di
     async def _finalized(**kwargs: Any) -> None:
         state["finalized"].append(kwargs)
 
-    async def _gone(item_id: str, reason: str) -> None:
+    async def _gone(item_id: str, reason: str, lease: Any = None) -> None:
         state["gone"].append((item_id, reason))
 
     class _FakeStore:
         def __init__(self, pool: Any) -> None:
             pass
 
-        async def write(self, user_id: str, item: Any) -> str:
+        async def write(self, user_id: str, item: Any, **kwargs: Any) -> str:
             state["writes"].append((user_id, item))
             return item.item_id
 
@@ -235,6 +245,7 @@ def _patch_tail(monkeypatch: pytest.MonkeyPatch, model: _FakeSummaryModel) -> di
     monkeypatch.setattr(pipeline_mod, "_mark_fully_indexed", _finalized)
     monkeypatch.setattr(pipeline_mod, "_mark_source_gone", _gone)
     monkeypatch.setattr(pipeline_mod, "GeminiSummaryModel", lambda: model)
+    monkeypatch.setattr(pipeline_mod, "renew_worker_lease", AsyncMock(return_value=True))
     return state
 
 
@@ -275,7 +286,15 @@ class TestYouTubeNative:
         _install_fake_downloader(monkeypatch, dl_calls)
 
         item = _make_item(_WATCH_URL)
-        await pipeline_mod._run(_make_ctx(item, tmp_path), item)
+        await pipeline_mod._run(_make_ctx(item, tmp_path), item, _lease(item))
+
+        state["emit"].assert_any_await(
+            item.id,
+            "analyzing",
+            "indexing",
+            detail={"stage": "summary_generated"},
+            lease=_lease(item),
+        )
 
         # Gemini got the canonical public watch URL + Data API hints.
         assert len(model.youtube_calls) == 1
@@ -328,7 +347,7 @@ class TestYouTubeNative:
         _install_fake_downloader(monkeypatch, dl_calls)
 
         item = _make_item(_WATCH_URL)
-        await pipeline_mod._run(_make_ctx(item, tmp_path), item)
+        await pipeline_mod._run(_make_ctx(item, tmp_path), item, _lease(item))
 
         assert state["gone"] == [("yt-item-1", "youtube_not_public")]
         assert state["finalized"] == []
@@ -352,7 +371,7 @@ class TestYouTubeNative:
 
         item = _make_item(_WATCH_URL)
         with pytest.raises(PipelineError, match="youtube_too_long"):
-            await pipeline_mod._run(_make_ctx(item, tmp_path), item)
+            await pipeline_mod._run(_make_ctx(item, tmp_path), item, _lease(item))
 
         assert state["finalized"] == []
         assert state["gone"] == []
@@ -374,7 +393,7 @@ class TestYouTubeNative:
 
         item = _make_item(_WATCH_URL)
         with pytest.raises(PipelineError, match="youtube_duration_unknown"):
-            await pipeline_mod._run(_make_ctx(item, tmp_path), item)
+            await pipeline_mod._run(_make_ctx(item, tmp_path), item, _lease(item))
 
         assert state["finalized"] == []
         assert model.youtube_calls == []
@@ -436,7 +455,7 @@ class TestYouTubeNative:
         state = _patch_tail(monkeypatch, model)
 
         item = _make_item(_WATCH_URL)
-        await pipeline_mod._run(_make_ctx(item, tmp_path), item)
+        await pipeline_mod._run(_make_ctx(item, tmp_path), item, _lease(item))
 
         extract_mock.assert_awaited_once_with(_WATCH_URL)
         assert len(model.legacy_calls) == 1

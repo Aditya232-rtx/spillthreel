@@ -1,5 +1,7 @@
 # SpillTheReel — Design System v1
 
+> **2026-10-18 execution direction:** Follow [DESIGN_EXECUTION_BRIEF.md](docs/DESIGN_EXECUTION_BRIEF.md) for the current native app. This older reference contains superseded typography and contrast rules: white on the current coral is about 3.48:1, insufficient for ordinary text. Preserve the warm brand while applying semantic tokens, readable body text and real data.
+
 **Version:** 1.0
 **Status:** Design direction locked — component specs ready for build
 **Owner:** Aditya Jadhav

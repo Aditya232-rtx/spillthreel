@@ -105,5 +105,47 @@ services:
       sh -c "alembic upgrade head &&
               uvicorn app.worker:app --host 0.0.0.0 --port 8001 --reload"
 
+  # Runs one bounded outbox batch at a time. In dev mode the dispatcher
+  # executes handlers under a renewable DB lease; API requests only persist
+  # intents and return. Restarting this process leaves unfinished rows due.
+  dispatcher:
+    build:
+      context: ./apps/api
+    environment:
+      ENVIRONMENT: dev
+      LOG_LEVEL: ${LOG_LEVEL:-DEBUG}
+      DATABASE_URL: postgresql+asyncpg://spill:spill@postgres:5432/spillthereel
+      DATABASE_URL_DIRECT: ${DATABASE_URL_DIRECT:-}
+      SUPABASE_URL: ${SUPABASE_URL:-}
+      SUPABASE_PUBLISHABLE_KEY: ${SUPABASE_PUBLISHABLE_KEY:-}
+      SUPABASE_SECRET_KEY: ${SUPABASE_SECRET_KEY:-}
+      SUPABASE_LEGACY_JWT_SECRET: ${SUPABASE_LEGACY_JWT_SECRET:-}
+      SUPABASE_BUCKET_MEDIA: ${SUPABASE_BUCKET_MEDIA:-media}
+      SUPABASE_BUCKET_EXPORTS: ${SUPABASE_BUCKET_EXPORTS:-exports}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      GROQ_API_KEY: ${GROQ_API_KEY:-}
+      APIFY_API_TOKEN: ${APIFY_API_TOKEN:-}
+      BRIGHTDATA_API_TOKEN: ${BRIGHTDATA_API_TOKEN:-}
+      YOUTUBE_API_KEY: ${YOUTUBE_API_KEY:-}
+      SCRAPER_PROVIDER: ${SCRAPER_PROVIDER:-none}
+      SENTRY_DSN: ${SENTRY_DSN:-}
+      SENTRY_RELEASE: ${SENTRY_RELEASE:-}
+      GIT_SHA: ${GIT_SHA:-}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+    volumes:
+      - ./apps/api:/app:cached
+    command:
+      - /bin/sh
+      - -c
+      - >-
+        while true; do
+        python -m app.tasks.dispatch_due --limit 50;
+        status=$$?;
+        if [ "$$status" -eq 0 ]; then sleep 1; else sleep 5; fi;
+        done
+
 volumes:
   pg_data:

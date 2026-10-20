@@ -1,12 +1,12 @@
-import { useEffect, useRef, useState } from 'react';
-import { Pressable, ScrollView, Text, View } from 'react-native';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { ActivityIndicator, Image, Pressable, ScrollView, Text, View } from 'react-native';
 import { useRouter } from 'expo-router';
 import { Svg, Circle, Line } from 'react-native-svg';
 import { Shadowed } from '@/components/Shadowed';
 import { AvatarView } from '@/components/AvatarView';
-import { CHART_BARS, COLLECTION_RAILS, RECENT_THUMBS } from '@/data/homeData';
 import { useAuth } from '@/hooks/useAuth';
 import { getFirstName } from '@/lib/display-name';
+import { api } from '@/lib/api';
 import {
   dismissVerifyNotice,
   getPendingEmail,
@@ -14,6 +14,29 @@ import {
   resendConfirmation,
 } from '@/lib/verification';
 import { border, color, font, fontSize, radius, space } from '@/theme/tokens';
+
+interface RecentItem {
+  id: string;
+  source_url: string;
+  platform: string;
+  state: string;
+  saved_at: string;
+  title: string | null;
+  summary: string | null;
+  thumbnail_url: string | null;
+  owner_username: string | null;
+}
+
+interface ItemsPage {
+  items: RecentItem[];
+  next_cursor: string | null;
+}
+
+type RecentStatus = 'loading' | 'ready' | 'error';
+
+function readableState(state: string): string {
+  return state.replace(/_/g, ' ');
+}
 
 export default function HomeScreen() {
   const router = useRouter();
@@ -31,6 +54,42 @@ export default function HomeScreen() {
   const popupShownRef = useRef(false);
   const [resendNote, setResendNote] = useState<string | null>(null);
   const [resending, setResending] = useState(false);
+
+  const [recentItems, setRecentItems] = useState<RecentItem[]>([]);
+  const [thumbnailFailures, setThumbnailFailures] = useState<Set<string>>(() => new Set());
+  const [recentStatus, setRecentStatus] = useState<RecentStatus>('loading');
+  const [recentError, setRecentError] = useState('Could not load your recent saves.');
+  const userId = user?.id;
+
+  const loadRecentItems = useCallback(async (signal?: AbortSignal) => {
+    if (signal?.aborted) return;
+    if (!userId) {
+      setRecentItems([]);
+      setRecentStatus('ready');
+      return;
+    }
+    setRecentStatus('loading');
+    try {
+      const page = await api.get<ItemsPage>('/v1/items?limit=8', signal ? { signal } : undefined);
+      if (signal?.aborted) return;
+      setRecentItems(page.items);
+      setThumbnailFailures(new Set());
+      setRecentStatus('ready');
+    } catch {
+      if (signal?.aborted) return;
+      setRecentItems([]);
+      // Keep provider/database details in diagnostics; the screen gets a safe,
+      // recoverable message that does not expose implementation errors.
+      setRecentError('Check your connection and try again.');
+      setRecentStatus('error');
+    }
+  }, [userId]);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    void loadRecentItems(controller.signal);
+    return () => controller.abort();
+  }, [loadRecentItems]);
 
   useEffect(() => {
     setDismissed(false);
@@ -73,12 +132,17 @@ export default function HomeScreen() {
     setResendNote(error ?? 'Fresh link sent — check your inbox.');
   }
 
+  const openLibrary = (): void => {
+    router.push('/(app)/library' as never);
+  };
+
   return (
     <View style={{ flex: 1, backgroundColor: color.cream }}>
-      {/* Outside-tap catcher for the verify popup */}
       {popupOpen ? (
         <Pressable
           onPress={() => setPopupOpen(false)}
+          accessibilityRole="button"
+          accessibilityLabel="Dismiss email confirmation notice"
           style={{ position: 'absolute', top: 0, bottom: 0, left: 0, right: 0, zIndex: 20 }}
         />
       ) : null}
@@ -86,291 +150,205 @@ export default function HomeScreen() {
         style={{ flex: 1, backgroundColor: color.cream }}
         contentContainerStyle={{ paddingHorizontal: space.xl, paddingTop: 54, paddingBottom: 130, gap: space.lg }}
       >
-      <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
-        <Text
-          style={{
-            fontFamily: font.display,
-            fontSize: fontSize.displayMd,
-            letterSpacing: -0.5,
-            color: color.ink,
-            textTransform: 'uppercase',
-          }}
-        >
-          HEY,{'\n'}{firstName}.
-        </Text>
-        <Pressable onPress={() => router.push('/(app)/profile')}>
-          <Shadowed offset={3} shadowColor={color.coral} radius={radius.pill}>
-            <View>
-              <AvatarView user={user} size={44} fallbackLetter={initial} backgroundColor={color.ink} />
-              {needsVerify && !dismissed ? (
-                <View
-                  style={{
-                    position: 'absolute',
-                    top: -3,
-                    right: -3,
-                    width: 14,
-                    height: 14,
-                    borderRadius: 7,
-                    backgroundColor: color.coral,
-                    borderWidth: 2,
-                    borderColor: color.cream,
-                  }}
-                />
-              ) : null}
-            </View>
-          </Shadowed>
-        </Pressable>
-      </View>
-
-      {/* Verify popup anchored under the profile icon */}
-      {popupOpen && needsVerify && !dismissed ? (
-        <View
-          style={{
-            position: 'absolute',
-            top: 108,
-            right: space.xl,
-            width: 250,
-            backgroundColor: '#F6E3D3',
-            borderWidth: 2,
-            borderColor: color.ink,
-            borderRadius: radius.md,
-            padding: space.md,
-            gap: 6,
-            zIndex: 30,
-          }}
-        >
-          <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
-            <Text style={{ fontFamily: font.display, fontSize: 12.5, color: color.ink, textTransform: 'uppercase' }}>
-              Confirm your email
-            </Text>
-            <Pressable onPress={handleDismiss} accessibilityLabel="Dismiss">
-              <Text style={{ fontSize: 13, color: 'rgba(21,23,15,0.6)' }}>✕</Text>
-            </Pressable>
-          </View>
-          <Text style={{ fontFamily: font.body, fontSize: 12, lineHeight: 17, color: 'rgba(21,23,15,0.75)' }}>
-            Tap the link we sent to {verifyEmail} to unlock your library.
-          </Text>
+        <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
           <Text
-            onPress={handleResend}
-            style={{ fontFamily: font.body, fontSize: 12, color: color.coral, textDecorationLine: 'underline' }}
+            style={{
+              fontFamily: font.display,
+              fontSize: fontSize.displayMd,
+              letterSpacing: -0.5,
+              color: color.ink,
+              textTransform: 'uppercase',
+            }}
           >
-            {resending ? 'Sending…' : 'Resend confirmation link'}
+            HEY,{'\n'}{firstName}.
           </Text>
-          {resendNote ? (
-            <Text style={{ fontFamily: font.body, fontSize: 11.5, color: 'rgba(21,23,15,0.7)' }}>
-              {resendNote}
-            </Text>
-          ) : null}
+          <Pressable
+            onPress={() => router.push('/(app)/profile')}
+            accessibilityRole="button"
+            accessibilityLabel="Open profile"
+            hitSlop={8}
+          >
+            <Shadowed offset={3} shadowColor={color.coral} radius={radius.pill}>
+              <View>
+                <AvatarView user={user} size={44} fallbackLetter={initial} backgroundColor={color.ink} />
+                {needsVerify && !dismissed ? (
+                  <View
+                    style={{
+                      position: 'absolute',
+                      top: -3,
+                      right: -3,
+                      width: 14,
+                      height: 14,
+                      borderRadius: 7,
+                      backgroundColor: color.coral,
+                      borderWidth: 2,
+                      borderColor: color.cream,
+                    }}
+                  />
+                ) : null}
+              </View>
+            </Shadowed>
+          </Pressable>
         </View>
-      ) : null}
 
-      <Pressable
-        onPress={() => router.push('/(app)/chat')}
-        style={{
-          flexDirection: 'row',
-          alignItems: 'center',
-          gap: space.sm,
-          backgroundColor: color.ink,
-          borderWidth: border.bold,
-          borderColor: color.ink,
-          borderRadius: radius.pill,
-          paddingLeft: space.xl,
-          paddingRight: space.sm,
-          minHeight: 52,
-        }}
-      >
-        <Text style={{ flex: 1, fontFamily: font.displaySemibold, fontSize: fontSize.bodyMd, color: 'rgba(243,239,226,0.65)' }}>
-          lets spill the reel....
-        </Text>
-        <View style={{ width: 36, height: 36, borderRadius: radius.pill, backgroundColor: color.coral, alignItems: 'center', justifyContent: 'center' }}>
-          <Svg width={15} height={15} viewBox="0 0 16 16">
-            <Circle cx={7} cy={7} r={5} fill="none" stroke={color.white} strokeWidth={2.2} />
-            <Line x1={11} y1={11} x2={15} y2={15} stroke={color.white} strokeWidth={2.2} strokeLinecap="round" />
-          </Svg>
-        </View>
-      </Pressable>
-
-      <View style={{ flexDirection: 'row', gap: space.sm }}>
-        <Shadowed offset={5} radius={radius.lg} style={{ flex: 1 }}>
+        {popupOpen && needsVerify && !dismissed ? (
           <View
             style={{
-              backgroundColor: color.coral,
-              borderWidth: border.bold,
+              position: 'absolute',
+              top: 108,
+              right: space.xl,
+              width: 250,
+              backgroundColor: '#F6E3D3',
+              borderWidth: 2,
               borderColor: color.ink,
-              borderRadius: radius.lg,
-              padding: space.lg,
-              height: 104,
-              justifyContent: 'space-between',
+              borderRadius: radius.md,
+              padding: space.md,
+              gap: 6,
+              zIndex: 30,
             }}
           >
-            <Text
-              style={{
-                alignSelf: 'flex-end',
-                transform: [{ rotate: '-4deg' }],
-                fontFamily: font.display,
-                fontSize: 10,
-                color: color.coral,
-                backgroundColor: color.cream,
-                borderWidth: 1.5,
-                borderColor: color.ink,
-                borderRadius: radius.pill,
-                paddingHorizontal: 8,
-                paddingVertical: 3,
-              }}
-            >
-              +18
-            </Text>
-            <View>
-              <Text style={{ fontFamily: font.display, fontSize: 38, lineHeight: 38, color: color.white }}>342</Text>
-              <Text style={{ fontFamily: font.body, fontSize: fontSize.mono, letterSpacing: 0.6, color: 'rgba(255,255,255,0.9)', marginTop: 4 }}>
-                REELS SAVED
+            <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
+              <Text style={{ fontFamily: font.display, fontSize: 12.5, color: color.ink, textTransform: 'uppercase' }}>
+                Confirm your email
               </Text>
+              <Pressable onPress={handleDismiss} accessibilityRole="button" accessibilityLabel="Dismiss">
+                <Text style={{ fontSize: 13, color: 'rgba(21,23,15,0.6)' }}>✕</Text>
+              </Pressable>
             </View>
-          </View>
-        </Shadowed>
-
-        <Shadowed offset={5} radius={radius.lg} style={{ flex: 1 }}>
-          <View
-            style={{
-              backgroundColor: color.gold,
-              borderWidth: border.bold,
-              borderColor: color.ink,
-              borderRadius: radius.lg,
-              padding: space.lg,
-              height: 104,
-              justifyContent: 'space-between',
-            }}
-          >
-            <Text
-              style={{
-                alignSelf: 'flex-end',
-                fontFamily: font.body,
-                fontSize: 10,
-                color: 'rgba(21,23,15,0.6)',
-                backgroundColor: 'rgba(21,23,15,0.12)',
-                borderRadius: radius.pill,
-                paddingHorizontal: 8,
-                paddingVertical: 3,
-              }}
-            >
-              wk
+            <Text style={{ fontFamily: font.body, fontSize: 14, lineHeight: 20, color: 'rgba(21,23,15,0.8)' }}>
+              Tap the link we sent to {verifyEmail} to unlock your library.
             </Text>
-            <View>
-              <Text style={{ fontFamily: font.display, fontSize: 38, lineHeight: 38, color: color.ink }}>6</Text>
-              <Text style={{ fontFamily: font.body, fontSize: fontSize.mono, letterSpacing: 0.6, color: 'rgba(21,23,15,0.75)', marginTop: 4 }}>
-                SAVED THIS WK
+            <Pressable
+              onPress={handleResend}
+              disabled={resending}
+              accessibilityRole="button"
+              accessibilityLabel={resending ? 'Sending confirmation link' : 'Resend confirmation link'}
+              accessibilityState={{ disabled: resending, busy: resending }}
+              style={{ minHeight: 48, justifyContent: 'center' }}
+            >
+              <Text style={{ fontFamily: font.body, fontSize: 14, color: color.coral, textDecorationLine: 'underline' }}>
+                {resending ? 'Sending…' : 'Resend confirmation link'}
               </Text>
-            </View>
-          </View>
-        </Shadowed>
-      </View>
-
-      <Shadowed offset={5} radius={radius.xl}>
-        <View style={{ backgroundColor: color.violet, borderWidth: border.bold, borderColor: color.ink, borderRadius: radius.xl, padding: space.lg + 2 }}>
-          <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: space.lg }}>
-            <Text style={{ fontFamily: font.display, fontSize: 17, letterSpacing: -0.3, color: color.white }}>RECALL ACTIVITY</Text>
-            <Text
-              style={{
-                fontFamily: font.display,
-                fontSize: 11,
-                color: color.ink,
-                backgroundColor: color.cream,
-                borderRadius: radius.pill,
-                paddingHorizontal: space.md,
-                paddingVertical: 5,
-              }}
-            >
-              THIS WEEK ⌄
-            </Text>
-          </View>
-          <View style={{ flexDirection: 'row', gap: 7, alignItems: 'flex-end', height: 60 }}>
-            {CHART_BARS.map((bar, i) => (
-              <View key={i} style={{ flex: 1, borderTopLeftRadius: 5, borderTopRightRadius: 5, backgroundColor: bar.color, height: `${bar.heightPercent}%` }} />
-            ))}
-          </View>
-        </View>
-      </Shadowed>
-
-      <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'baseline' }}>
-        <Text style={{ fontFamily: font.display, fontSize: 18, letterSpacing: -0.3, color: color.ink }}>RECENTLY SAVED</Text>
-        <Text style={{ fontFamily: font.display, fontSize: 12, color: color.ink, textDecorationLine: 'underline' }}>See all</Text>
-      </View>
-
-      <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: space.sm }}>
-        {RECENT_THUMBS.map((thumb) => (
-          <View key={thumb.id} style={{ width: 72, height: 96, borderRadius: radius.md, backgroundColor: thumb.bg, borderWidth: border.standard, borderColor: color.ink }}>
-            <View
-              style={{
-                position: 'absolute',
-                bottom: 8,
-                left: 8,
-                width: 22,
-                height: 22,
-                borderRadius: radius.pill,
-                backgroundColor: 'rgba(21,23,15,0.6)',
-                alignItems: 'center',
-                justifyContent: 'center',
-              }}
-            >
-              <Text style={{ color: color.white, fontSize: 9 }}>▶</Text>
-            </View>
-          </View>
-        ))}
-      </ScrollView>
-
-      <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'baseline' }}>
-        <Text style={{ fontFamily: font.display, fontSize: 18, letterSpacing: -0.3, color: color.ink }}>YOUR COLLECTIONS</Text>
-        <Text style={{ fontFamily: font.body, fontSize: fontSize.mono, backgroundColor: color.ink, color: color.cream, borderRadius: radius.pill, paddingHorizontal: 9, paddingVertical: 3 }}>
-          {COLLECTION_RAILS.length}
-        </Text>
-      </View>
-
-      {COLLECTION_RAILS.map((rail) => (
-        <Shadowed key={rail.id} offset={4} radius={radius.xxl}>
-          <View
-            style={{
-              flexDirection: 'row',
-              alignItems: 'center',
-              justifyContent: 'space-between',
-              backgroundColor: rail.bg,
-              borderWidth: border.bold,
-              borderColor: color.ink,
-              borderRadius: radius.xxl,
-              paddingHorizontal: space.xl - 2,
-              paddingVertical: space.lg,
-            }}
-          >
-            {rail.badge ? (
-              <Text
-                style={{
-                  position: 'absolute',
-                  top: -10,
-                  right: 16,
-                  transform: [{ rotate: '5deg' }],
-                  backgroundColor: color.violet,
-                  borderWidth: border.standard,
-                  borderColor: color.ink,
-                  borderRadius: radius.pill,
-                  paddingHorizontal: 10,
-                  paddingVertical: 3,
-                  fontFamily: font.display,
-                  fontSize: 9,
-                  color: color.white,
-                }}
-              >
-                {rail.badge}
+            </Pressable>
+            {resendNote ? (
+              <Text style={{ fontFamily: font.body, fontSize: 13, color: 'rgba(21,23,15,0.8)' }}>
+                {resendNote}
               </Text>
             ) : null}
-            <View>
-              <Text style={{ fontFamily: font.display, fontSize: 24, letterSpacing: -0.5, color: rail.text, textTransform: 'uppercase' }}>{rail.name}</Text>
-              <Text style={{ fontFamily: font.body, fontSize: fontSize.mono, color: rail.subText, marginTop: 2 }}>{rail.count}</Text>
-            </View>
-            <View style={{ width: 36, height: 36, borderRadius: radius.pill, backgroundColor: color.ink, alignItems: 'center', justifyContent: 'center' }}>
-              <Text style={{ fontSize: 15, color: color.cream }}>↗</Text>
-            </View>
           </View>
-        </Shadowed>
-      ))}
+        ) : null}
+
+        <Pressable
+          onPress={() => router.push('/(app)/chat')}
+          accessibilityRole="button"
+          accessibilityLabel="Add an item or ask SpillTheReel"
+          style={{
+            flexDirection: 'row',
+            alignItems: 'center',
+            gap: space.sm,
+            backgroundColor: color.ink,
+            borderWidth: border.bold,
+            borderColor: color.ink,
+            borderRadius: radius.pill,
+            paddingLeft: space.xl,
+            paddingRight: space.sm,
+            minHeight: 56,
+          }}
+        >
+          <Text style={{ flex: 1, fontFamily: font.displaySemibold, fontSize: fontSize.bodyMd, color: color.cream }}>
+            Add an item · Ask
+          </Text>
+          <View style={{ width: 40, height: 40, borderRadius: radius.pill, backgroundColor: color.coral, alignItems: 'center', justifyContent: 'center' }}>
+            <Svg width={19} height={19} viewBox="0 0 16 16">
+              <Circle cx={7} cy={7} r={5} fill="none" stroke={color.white} strokeWidth={2.2} />
+              <Line x1={11} y1={11} x2={15} y2={15} stroke={color.white} strokeWidth={2.2} strokeLinecap="round" />
+            </Svg>
+          </View>
+        </Pressable>
+
+        <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'baseline' }}>
+          <Text style={{ fontFamily: font.display, fontSize: 18, letterSpacing: -0.3, color: color.ink }}>RECENTLY SAVED</Text>
+          <Pressable onPress={openLibrary} accessibilityRole="button" accessibilityLabel="See all saved items" hitSlop={8} style={{ minHeight: 48, justifyContent: 'center' }}>
+            <Text style={{ fontFamily: font.display, fontSize: 13, color: color.ink, textDecorationLine: 'underline' }}>See all</Text>
+          </Pressable>
+        </View>
+
+        {recentStatus === 'loading' ? (
+          <View accessibilityRole="progressbar" accessibilityLabel="Loading recent saves" style={{ minHeight: 104, alignItems: 'center', justifyContent: 'center', gap: space.sm }}>
+            <ActivityIndicator color={color.coral} />
+            <Text style={{ fontFamily: font.body, fontSize: 14, color: '#55574F' }}>Loading your recent saves…</Text>
+          </View>
+        ) : recentStatus === 'error' ? (
+          <View style={{ backgroundColor: '#F6E3D3', borderWidth: border.standard, borderColor: color.ink, borderRadius: radius.lg, padding: space.lg, gap: space.sm }}>
+            <Text style={{ fontFamily: font.display, fontSize: 16, color: color.ink }}>Your saves didn’t load.</Text>
+            <Text style={{ fontFamily: font.body, fontSize: 14, lineHeight: 20, color: '#45473F' }}>{recentError}</Text>
+            <Pressable
+              onPress={() => void loadRecentItems()}
+              accessibilityRole="button"
+              accessibilityLabel="Retry loading recent saves"
+              style={{ alignSelf: 'flex-start', minHeight: 48, justifyContent: 'center', paddingHorizontal: space.lg, borderRadius: radius.pill, backgroundColor: color.ink }}
+            >
+              <Text style={{ fontFamily: font.display, fontSize: 13, color: color.cream }}>TRY AGAIN</Text>
+            </Pressable>
+          </View>
+        ) : recentItems.length === 0 ? (
+          <View style={{ backgroundColor: '#EDEAE0', borderWidth: border.standard, borderColor: color.ink, borderRadius: radius.lg, padding: space.lg, gap: space.sm }}>
+            <Text style={{ fontFamily: font.display, fontSize: 17, color: color.ink }}>Your library starts with one good find.</Text>
+            <Text style={{ fontFamily: font.body, fontSize: 14, lineHeight: 20, color: '#45473F' }}>
+              Save something you want to remember, then ask SpillTheReel about it anytime.
+            </Text>
+            <Pressable
+              onPress={() => router.push('/(app)/chat')}
+              accessibilityRole="button"
+              accessibilityLabel="Add your first item"
+              style={{ alignSelf: 'flex-start', minHeight: 48, justifyContent: 'center', paddingHorizontal: space.lg, borderRadius: radius.pill, backgroundColor: color.coral }}
+            >
+              <Text style={{ fontFamily: font.display, fontSize: 13, color: color.ink }}>＋ ADD AN ITEM</Text>
+            </Pressable>
+          </View>
+        ) : (
+          <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: space.sm, paddingBottom: space.xs }}>
+            {recentItems.map((item) => (
+              <Pressable
+                key={item.id}
+                onPress={() => router.push({ pathname: '/(app)/item/[id]', params: { id: item.id } })}
+                accessibilityRole="button"
+                accessibilityLabel={(item.title || 'Untitled save') + ', ' + item.platform + ', ' + readableState(item.state)}
+                style={{ width: 148, borderRadius: radius.lg }}
+              >
+                <Shadowed offset={3} radius={radius.lg} shadowColor={color.ink}>
+                  <View style={{ overflow: 'hidden', backgroundColor: '#EDEAE0', borderWidth: border.standard, borderColor: color.ink, borderRadius: radius.lg }}>
+                    {item.thumbnail_url && !thumbnailFailures.has(item.id) ? (
+                      <Image
+                        source={{ uri: item.thumbnail_url }}
+                        style={{ width: '100%', height: 116 }}
+                        resizeMode="cover"
+                        accessibilityLabel="Saved item thumbnail"
+                        onError={() => setThumbnailFailures((current) => new Set(current).add(item.id))}
+                      />
+                    ) : (
+                      <View
+                        accessibilityRole="image"
+                        accessibilityLabel="Preview unavailable"
+                        style={{ height: 116, alignItems: 'center', justifyContent: 'center', backgroundColor: color.sage }}
+                      >
+                        <Text style={{ fontFamily: font.display, fontSize: 12, color: color.ink }}>PREVIEW UNAVAILABLE</Text>
+                      </View>
+                    )}
+                    <View style={{ padding: space.sm, gap: 3 }}>
+                      <Text numberOfLines={2} style={{ minHeight: 38, fontFamily: font.body, fontSize: 14, lineHeight: 19, color: color.ink }}>
+                        {item.title || 'Untitled save'}
+                      </Text>
+                      <Text numberOfLines={1} style={{ fontFamily: font.body, fontSize: 12, color: '#55574F' }}>
+                        {item.platform.toUpperCase()} · {readableState(item.state)}
+                      </Text>
+                    </View>
+                  </View>
+                </Shadowed>
+              </Pressable>
+            ))}
+          </ScrollView>
+        )}
       </ScrollView>
     </View>
   );

@@ -1,5 +1,18 @@
 # SpillTheReel — Architecture Document
 
+> **Decision override — 2026-10-18:** The owner's 2026-10-16 decisions and the
+> [Luna implementation plan](docs/LUNA_IMPLEMENTATION_PLAN.md) supersede conflicting
+> requirements below. Imported media deliberately receives full ingestion; do not
+> restore age-based/text-first tiering. Free bulk import is **250 once per account**
+> (**150 Instagram + 100 pooled other apps**); Premium is **1,000 total once per
+> account** across supported apps. No monthly or per-upload reset; these are not
+> individual share-save limits. Upgrade/refund/billing/retention details are proposals
+> in the plan, not confirmed owner decisions. Old cost estimates, unlimited-import
+> promises and no-premium-gate wording are historical. Keep Supabase Auth/Postgres/
+> Storage; remaining Firebase/Cloud SQL/GCS wording is stale. See the
+> [current-state review](docs/PROJECT_REVIEW_2026-10-16.md) for verified implementation
+> versus remaining work. HANDOFF.md and old completion claims are not execution evidence.
+
 **Version:** 1.1
 **Status:** Draft — pre-build (Supabase migration applied)
 **Owner:** Aditya Jadhav

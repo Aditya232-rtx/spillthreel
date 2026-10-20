@@ -5,7 +5,7 @@ import { color } from '@/theme/tokens';
 
 const ROUTE_BY_TAB: Record<TabKey, string> = {
   home: '/(app)/home',
-  categories: '/(app)/categories',
+  library: '/(app)/library',
   chat: '/(app)/chat',
   profile: '/(app)/profile',
   settings: '/(app)/settings',
@@ -14,7 +14,11 @@ const ROUTE_BY_TAB: Record<TabKey, string> = {
 export default function AppLayout() {
   const router = useRouter();
   const segments = useSegments() as string[];
-  const activeTab = (segments[1] as TabKey | undefined) ?? 'home';
+  const routeSegment = segments[1];
+  // Categories remains a reachable sub-screen; item details belong to Library.
+  const activeTab: TabKey = routeSegment === 'categories' || routeSegment === 'item'
+    ? 'library'
+    : ((routeSegment as TabKey | undefined) ?? 'home');
   const isChat = activeTab === 'chat';
 
   return (

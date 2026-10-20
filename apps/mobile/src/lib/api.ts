@@ -1,175 +1,238 @@
 /**
  * API client — every backend call goes through here.
  *
- * Responsibilities:
- *   1. Prefix with API_BASE_URL.
- *   2. Attach the current Supabase JWT as `Authorization: Bearer …`.
- *   3. Parse JSON responses; surface API errors as thrown ApiErrors.
- *   4. Centralized session-expiry handling: the Supabase JS client already
- *      tries to refresh a stale access token; if the backend STILL answers
- *      401, the session is dead (revoked, deleted user, rotated keys), so
- *      sign out locally before re-throwing. useAuth's onAuthStateChange
- *      subscription drives the AuthGate to /(auth)/welcome from there —
- *      no per-screen 401 handling needed.
- *
- * All screens should call this via TanStack Query — never `fetch()` a
- * `/v1/…` URL directly. That keeps the token-attach logic in one place.
+ * Authenticated requests capture the session that supplied their bearer token.
+ * A 401 is returned to the caller without mutating auth state: Supabase has no
+ * compare-and-sign-out operation, so a delayed response could clear a new login.
+ * Request bodies may be JSON objects or FormData. Callers may provide a stable
+ * idempotency key when retrying a logical mutation.
  */
 import { supabase } from '@/lib/supabase';
 
-// EXPO_PUBLIC_API_URL wins when set (preview/production EAS builds).
-// Otherwise localhost in dev, and the Cloud Run URL in release builds.
 const API_BASE_URL =
   process.env.EXPO_PUBLIC_API_URL ||
   (__DEV__ ? 'http://localhost:8000' : 'https://api.spillthereel.app');
+
+export type ApiErrorCode = string;
 
 export class ApiError extends Error {
   constructor(
     public readonly status: number,
     public readonly body: unknown,
     message: string,
+    public readonly code: ApiErrorCode = 'http_error',
   ) {
     super(message);
     this.name = 'ApiError';
   }
 }
 
+type RequestBody = Record<string, unknown> | FormData | null;
+
 interface RequestOptions {
-  method?: 'GET' | 'POST' | 'PATCH' | 'DELETE';
-  body?: Record<string, unknown> | null;
+  method?: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
+  body?: RequestBody;
   /** Include auth header? Default true. Set false for public routes. */
   auth?: boolean;
-  /** AbortSignal for cancellable requests (chat search cancel-on-switch). */
+  /** Caller cancellation. User cancellation remains an AbortError. */
   signal?: AbortSignal;
+  /** Per-request total fetch deadline in milliseconds. */
+  timeoutMs?: number;
+  /** Reuse the same value when retrying the same logical mutation. */
+  idempotencyKey?: string;
+  /** Fail closed if the current session no longer belongs to the queue owner. */
+  expectedUserId?: string;
 }
 
-/** Default network timeout (ms) — every request aborts past this. */
-const DEFAULT_TIMEOUT_MS = 15000;
+const DEFAULT_TIMEOUT_MS = 15_000;
 
-function timeoutSignal(): AbortSignal | undefined {
-  try {
-    return AbortSignal.timeout(DEFAULT_TIMEOUT_MS);
-  } catch {
-    return undefined;
-  }
+interface RequestAbort {
+  signal: AbortSignal;
+  didTimeout: () => boolean;
+  cleanup: () => void;
 }
 
-/**
- * Combine the caller's cancel signal with the default timeout so every
- * request is both cancellable AND time-bounded. Uses AbortSignal.any when
- * available, with a manual AbortController fallback for older runtimes.
- */
-function effectiveSignal(caller?: AbortSignal): AbortSignal | undefined {
-  const timeout = timeoutSignal();
-  if (!caller) return timeout;
-  if (!timeout) return caller;
-  try {
-    if (typeof AbortSignal.any === 'function') {
-      return AbortSignal.any([caller, timeout]);
-    }
-  } catch {
-    // fall through to manual combine below
-  }
+function createRequestAbort(caller: AbortSignal | undefined, timeoutMs: number): RequestAbort {
   const controller = new AbortController();
-  if (caller.aborted || timeout.aborted) {
-    controller.abort(caller.aborted ? caller.reason : timeout.reason);
-    return controller.signal;
-  }
-  const onAbort = (): void => {
-    try {
-      controller.abort(caller.aborted ? caller.reason : timeout.reason);
-    } catch {
-      try {
-        controller.abort();
-      } catch {
-        // no-op
-      }
-    }
+  let timedOut = false;
+  const onCallerAbort = (): void => {
+    controller.abort(caller?.reason ?? createAbortError());
   };
-  caller.addEventListener('abort', onAbort, { once: true });
-  timeout.addEventListener('abort', onAbort, { once: true });
-  return controller.signal;
+
+  if (caller?.aborted) onCallerAbort();
+  else caller?.addEventListener('abort', onCallerAbort, { once: true });
+
+  const timer = setTimeout(() => {
+    timedOut = true;
+    controller.abort(createTimeoutError());
+  }, timeoutMs);
+
+  return {
+    signal: controller.signal,
+    didTimeout: () => timedOut,
+    cleanup: () => {
+      clearTimeout(timer);
+      caller?.removeEventListener('abort', onCallerAbort);
+    },
+  };
+}
+
+function createAbortError(): Error {
+  const error = new Error('The request was cancelled.');
+  error.name = 'AbortError';
+  return error;
+}
+
+function createTimeoutError(): Error {
+  const error = new Error('The request deadline elapsed.');
+  error.name = 'TimeoutError';
+  return error;
+}
+
+function isFormData(body: RequestBody): body is FormData {
+  return typeof FormData !== 'undefined' && body instanceof FormData;
+}
+
+async function getSessionBeforeDeadline(
+  signal: AbortSignal,
+  didTimeout: () => boolean,
+): Promise<Awaited<ReturnType<typeof supabase.auth.getSession>>> {
+  let rejectOnAbort: (() => void) | undefined;
+  const aborted = new Promise<never>((_resolve, reject) => {
+    rejectOnAbort = () => reject(didTimeout() ? timeoutApiError() : createAbortError());
+    if (signal.aborted) rejectOnAbort();
+    else signal.addEventListener('abort', rejectOnAbort, { once: true });
+  });
+  try {
+    return await Promise.race([supabase.auth.getSession(), aborted]);
+  } finally {
+    if (rejectOnAbort) signal.removeEventListener('abort', rejectOnAbort);
+  }
+}
+
+function errorDetails(payload: unknown, status: number): { message: string; code: ApiErrorCode } {
+  if (typeof payload === 'object' && payload !== null) {
+    const root = payload as Record<string, unknown>;
+    const detail = typeof root.detail === 'object' && root.detail !== null
+      ? (root.detail as Record<string, unknown>)
+      : root;
+    const messageValue = detail.message ?? detail.detail ?? root.message ?? root.detail;
+    const codeValue = detail.code ?? root.code;
+    return {
+      message: typeof messageValue === 'string' ? messageValue : `HTTP ${status}`,
+      code: typeof codeValue === 'string' ? codeValue : 'http_error',
+    };
+  }
+  return {
+    message: typeof payload === 'string' && payload.length > 0 ? payload : `HTTP ${status}`,
+    code: 'http_error',
+  };
 }
 
 async function apiRequest<T>(path: string, options: RequestOptions = {}): Promise<T> {
-  const { method = 'GET', body = null, auth = true, signal } = options;
-  const headers: Record<string, string> = {
-    'Content-Type': 'application/json',
-    Accept: 'application/json',
-  };
-
-  if (auth) {
-    // getSession() returns the cached session synchronously if valid, or
-    // triggers a refresh if the access token is close to expiry.
-    const { data } = await supabase.auth.getSession();
-    const token = data.session?.access_token;
-    if (!token) {
-      throw new ApiError(401, null, 'no_active_session');
-    }
-    headers.Authorization = `Bearer ${token}`;
+  const {
+    method = 'GET',
+    body = null,
+    auth = true,
+    signal,
+    timeoutMs = DEFAULT_TIMEOUT_MS,
+    idempotencyKey,
+    expectedUserId,
+  } = options;
+  if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) {
+    throw new RangeError('timeoutMs must be a positive finite number');
   }
 
-  const effective = effectiveSignal(signal);
-  const response = await fetch(`${API_BASE_URL}${path}`, {
-    method,
-    headers,
-    body: body ? JSON.stringify(body) : undefined,
-    // AbortError (a DOMException, NOT an ApiError) propagates to the caller,
-    // which must ignore it when it aborted the request itself. A timeout
-    // surfaces as a DOMException named 'TimeoutError' — callers map it to
-    // their retryable path (see errorKind in chat).
-    ...(effective ? { signal: effective } : null),
-  });
+  const requestAbort = createRequestAbort(signal, timeoutMs);
+  let capturedAccessToken: string | undefined;
+  try {
+    const headers: Record<string, string> = { Accept: 'application/json' };
+    if (body !== null && !isFormData(body)) headers['Content-Type'] = 'application/json';
+    if (idempotencyKey) headers['Idempotency-Key'] = idempotencyKey;
 
-  const isJson = response.headers.get('content-type')?.includes('application/json');
-  const payload = isJson ? await response.json() : await response.text();
-
-  if (!response.ok) {
-    if (auth && response.status === 401) {
-      // Session is dead despite the client's refresh attempt — clear it
-      // so AuthGate routes to welcome instead of retrying forever.
-      // Best-effort: never mask the original API error if signOut throws.
-      try {
-        await supabase.auth.signOut();
-      } catch {
-        // no-op
+    if (auth) {
+      const { data } = await getSessionBeforeDeadline(
+        requestAbort.signal,
+        requestAbort.didTimeout,
+      );
+      if (requestAbort.signal.aborted) {
+        if (requestAbort.didTimeout()) throw timeoutApiError();
+        throw createAbortError();
       }
+      capturedAccessToken = data.session?.access_token;
+      if (!capturedAccessToken || !data.session?.user.id) {
+        throw new ApiError(401, null, 'no_active_session', 'no_active_session');
+      }
+      if (expectedUserId && data.session.user.id !== expectedUserId) {
+        throw new ApiError(401, null, 'account_scope_mismatch', 'account_scope_mismatch');
+      }
+      headers.Authorization = `Bearer ${capturedAccessToken}`;
     }
-    throw new ApiError(
-      response.status,
-      payload,
-      typeof payload === 'object' && payload !== null && 'detail' in payload
-        ? String((payload as { detail: unknown }).detail)
-        : `HTTP ${response.status}`,
-    );
-  }
 
-  return payload as T;
+    let response: Response;
+    try {
+      response = await fetch(`${API_BASE_URL}${path}`, {
+        method,
+        headers,
+        body: body === null ? undefined : isFormData(body) ? body : JSON.stringify(body),
+        signal: requestAbort.signal,
+      });
+    } catch (error) {
+      if (requestAbort.didTimeout()) throw timeoutApiError();
+      if (signal?.aborted) throw error;
+      throw error;
+    }
+
+    if (requestAbort.signal.aborted) {
+      if (requestAbort.didTimeout()) throw timeoutApiError();
+      throw createAbortError();
+    }
+    const isJson = response.headers.get('content-type')?.includes('application/json');
+    const payload = isJson ? await response.json() : await response.text();
+    if (requestAbort.signal.aborted) {
+      if (requestAbort.didTimeout()) throw timeoutApiError();
+      throw createAbortError();
+    }
+
+    if (!response.ok) {
+      const details = errorDetails(payload, response.status);
+      throw new ApiError(
+        response.status,
+        payload,
+        details.message,
+        response.status === 401 && details.code === 'http_error'
+          ? 'session_rejected'
+          : details.code,
+      );
+    }
+
+    return payload as T;
+  } finally {
+    requestAbort.cleanup();
+  }
+}
+
+function timeoutApiError(): ApiError {
+  return new ApiError(0, null, 'request_timeout', 'request_timeout');
 }
 
 export const api = {
   get: <T,>(path: string, opts?: Omit<RequestOptions, 'method' | 'body'>) =>
     apiRequest<T>(path, { ...opts, method: 'GET' }),
 
-  post: <T,>(path: string, body: Record<string, unknown>, opts?: Omit<RequestOptions, 'method' | 'body'>) =>
+  post: <T,>(path: string, body: RequestBody, opts?: Omit<RequestOptions, 'method' | 'body'>) =>
     apiRequest<T>(path, { ...opts, method: 'POST', body }),
 
-  patch: <T,>(path: string, body: Record<string, unknown>, opts?: Omit<RequestOptions, 'method' | 'body'>) =>
+  put: <T,>(path: string, opts?: Omit<RequestOptions, 'method' | 'body'>) =>
+    apiRequest<T>(path, { ...opts, method: 'PUT' }),
+
+  patch: <T,>(path: string, body: RequestBody, opts?: Omit<RequestOptions, 'method' | 'body'>) =>
     apiRequest<T>(path, { ...opts, method: 'PATCH', body }),
 
   delete: <T,>(path: string, opts?: Omit<RequestOptions, 'method' | 'body'>) =>
     apiRequest<T>(path, { ...opts, method: 'DELETE' }),
 };
 
-/**
- * POST /v1/search — chat recall.
- *
- * Contract (backend guarantees): request {query 1..500, filters?, top_k?},
- * response {text, cards[], citations[], meta{}}. Errors 400/401/422/503/504
- * surface as ApiError with the backend's JSON detail as message; a client-side
- * abort surfaces as DOMException AbortError (not ApiError — ignore it when
- * the caller cancelled).
- */
 export interface SearchFilters {
   platforms?: string[];
   categories?: string[];
@@ -211,6 +274,8 @@ export interface SearchResponse {
 export interface SearchOptions {
   top_k?: number;
   signal?: AbortSignal;
+  timeoutMs?: number;
+  idempotencyKey?: string;
 }
 
 export function search(
@@ -225,20 +290,10 @@ export function search(
       ...(filters ? { filters } : null),
       ...(typeof opts?.top_k === 'number' ? { top_k: opts.top_k } : null),
     },
-    opts?.signal ? { signal: opts.signal } : undefined,
+    { ...opts, timeoutMs: opts?.timeoutMs ?? 25_000 },
   );
 }
 
-/**
- * GET /v1/items/{id} — item detail.
- *
- * Contract (apps/api/app/api/v1/items.py `ItemDetail`): ItemSummary fields
- * (id, source_url, platform, state, saved_at, title?, summary?,
- * thumbnail_url?, owner_username?) plus transcript?, on_screen_text?,
- * caption?, hashtags[], owner_name?, owner_url?, duration_seconds?,
- * failure_reason?. No categories array — use hashtags[] for key chips.
- * Other-user or deleted ids surface as ApiError 404.
- */
 export interface ItemDetail {
   id: string;
   source_url: string;
@@ -259,20 +314,10 @@ export interface ItemDetail {
   failure_reason: string | null;
 }
 
-export function getItem(id: string, opts?: { signal?: AbortSignal }): Promise<ItemDetail> {
-  return api.get<ItemDetail>(
-    `/v1/items/${encodeURIComponent(id)}`,
-    opts?.signal ? { signal: opts.signal } : undefined,
-  );
+export function getItem(id: string, opts?: { signal?: AbortSignal; timeoutMs?: number }): Promise<ItemDetail> {
+  return api.get<ItemDetail>(`/v1/items/${encodeURIComponent(id)}`, opts);
 }
 
-/**
- * POST /v1/items/{id}/retry — re-queue a failed item for ingestion.
- *
- * Allowed from `failed` only (422 otherwise); already-`queued` is an
- * idempotent no-op. Returns the new state; callers should re-fetch
- * getItem() to refresh the detail view.
- */
 export interface ItemActionResponse {
   item_id: string;
   state: string;
@@ -280,26 +325,144 @@ export interface ItemActionResponse {
 
 export function retryItem(
   id: string,
-  opts?: { signal?: AbortSignal },
+  opts?: { signal?: AbortSignal; timeoutMs?: number; idempotencyKey?: string },
 ): Promise<ItemActionResponse> {
-  return api.post<ItemActionResponse>(
-    `/v1/items/${encodeURIComponent(id)}/retry`,
-    {},
-    opts?.signal ? { signal: opts.signal } : undefined,
+  return api.post<ItemActionResponse>(`/v1/items/${encodeURIComponent(id)}/retry`, {}, opts);
+}
+
+export function deleteMe(
+  opts?: { signal?: AbortSignal; timeoutMs?: number; idempotencyKey?: string },
+): Promise<{ status: string }> {
+  return api.delete<{ status: string }>('/v1/me', opts);
+}
+
+export interface UserCollection {
+  id: string;
+  name: string;
+  privacy: string;
+  source: string;
+  item_count: number;
+  contains_item: boolean;
+}
+
+export interface CollectionRequestOptions {
+  signal?: AbortSignal;
+  timeoutMs?: number;
+  expectedUserId?: string;
+  itemId?: string;
+}
+
+export function getCollections(opts?: CollectionRequestOptions): Promise<UserCollection[]> {
+  const { itemId, ...requestOptions } = opts ?? {};
+  const path = itemId
+    ? `/v1/collections?item_id=${encodeURIComponent(itemId)}`
+    : '/v1/collections';
+  return api.get<UserCollection[]>(path, requestOptions);
+}
+
+export function createCollection(
+  name: string,
+  opts?: CollectionRequestOptions,
+): Promise<UserCollection> {
+  return api.post<UserCollection>('/v1/collections', { name }, opts);
+}
+
+export function addItemToCollection(
+  collectionId: string,
+  itemId: string,
+  opts?: CollectionRequestOptions,
+): Promise<void> {
+  return api.put<void>(
+    `/v1/collections/${encodeURIComponent(collectionId)}/items/${encodeURIComponent(itemId)}`,
+    opts,
   );
 }
 
-/**
- * DELETE /v1/me — account deletion.
- *
- * Contract (apps/api/app/api/v1/users.py `delete_me`): 202
- * `{status: "scheduled"}` — the profile is soft-flagged and a
- * `delete_user` task purges auth + user-scoped rows + embeddings +
- * Storage. Callers must signOut() locally after this resolves.
- */
-export function deleteMe(opts?: { signal?: AbortSignal }): Promise<{ status: string }> {
-  return api.delete<{ status: string }>(
-    '/v1/me',
-    opts?.signal ? { signal: opts.signal } : undefined,
+export function removeItemFromCollection(
+  collectionId: string,
+  itemId: string,
+  opts?: CollectionRequestOptions,
+): Promise<void> {
+  return api.delete<void>(
+    `/v1/collections/${encodeURIComponent(collectionId)}/items/${encodeURIComponent(itemId)}`,
+    opts,
+  );
+}
+
+export interface ImportPreview {
+  preview_id: string;
+  expires_at: string;
+  total_candidates: number;
+}
+
+export interface ImportPreviewCandidate {
+  candidate_id: string;
+  ordinal: number;
+  kind: 'media' | 'audio';
+  source_bucket: 'instagram' | 'other';
+  url: string | null;
+  title: string | null;
+  artist: string | null;
+  saved_at: string | null;
+  collection_names: string[];
+}
+
+export interface ImportPreviewCandidatesPage {
+  candidates: ImportPreviewCandidate[];
+  next_cursor: string | null;
+}
+
+export interface ImportPreviewCommitResult {
+  import_id: string;
+  state: string;
+  total_parsed: number;
+}
+
+export interface ImportPreviewRequestOptions {
+  signal?: AbortSignal;
+  timeoutMs?: number;
+  expectedUserId?: string;
+}
+
+export function createImportPreview(
+  uri: string,
+  fileName: string,
+  idempotencyKey: string,
+  opts?: ImportPreviewRequestOptions,
+): Promise<ImportPreview> {
+  const body = new FormData();
+  body.append('file', {
+    uri,
+    name: fileName,
+    type: fileName.toLowerCase().endsWith('.zip') ? 'application/zip' : 'text/html',
+  } as unknown as Blob);
+  return api.post<ImportPreview>('/v1/imports/previews', body, {
+    ...opts,
+    idempotencyKey,
+    timeoutMs: opts?.timeoutMs ?? 60_000,
+  });
+}
+
+export function getImportPreviewCandidates(
+  previewId: string,
+  options: ImportPreviewRequestOptions & { limit?: number; cursor?: string | null } = {},
+): Promise<ImportPreviewCandidatesPage> {
+  const query = new URLSearchParams({ limit: String(options.limit ?? 100) });
+  if (options.cursor) query.set('cursor', options.cursor);
+  return api.get<ImportPreviewCandidatesPage>(
+    `/v1/imports/previews/${encodeURIComponent(previewId)}/candidates?${query.toString()}`,
+    options,
+  );
+}
+
+export function commitImportPreview(
+  previewId: string,
+  candidateIds: string[],
+  opts?: ImportPreviewRequestOptions,
+): Promise<ImportPreviewCommitResult> {
+  return api.post<ImportPreviewCommitResult>(
+    `/v1/imports/previews/${encodeURIComponent(previewId)}/commit`,
+    { candidate_ids: candidateIds },
+    { ...opts, timeoutMs: opts?.timeoutMs ?? 30_000 },
   );
 }

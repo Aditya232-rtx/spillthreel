@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Image,
@@ -9,15 +9,17 @@ import {
   View,
 } from 'react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Svg, Polyline } from 'react-native-svg';
 import { Badge } from '@/components/Badge';
 import { ApiError, getItem, retryItem, type ItemDetail } from '@/lib/api';
+import { useAuth } from '@/hooks/useAuth';
 import { alpha, color, font, radius, space } from '@/theme/tokens';
 
 /** Local fallback when the item has no thumbnail or remote load fails. */
 const ITEM_PLACEHOLDER = require('../../../assets/images/chat-ui-libraries.png');
 
-type Status = 'loading' | 'ready' | 'not-found' | 'error';
+type Status = 'loading' | 'ready' | 'not-found' | 'error' | 'auth-required';
 
 /** State → sticker badge colors (Badge is the shared sticker pill). */
 function badgeColors(state: string): { background: string; textColor: string } {
@@ -42,8 +44,13 @@ function badgeLabel(state: string): string {
 
 export default function ItemDetailScreen() {
   const router = useRouter();
+  const insets = useSafeAreaInsets();
+  const { user } = useAuth();
   const { id } = useLocalSearchParams<{ id: string }>();
+  const activeUserIdRef = useRef(user?.id ?? null);
+  activeUserIdRef.current = user?.id ?? null;
   const [status, setStatus] = useState<Status>('loading');
+  const [loadedOwnerId, setLoadedOwnerId] = useState<string | null>(null);
   const [item, setItem] = useState<ItemDetail | null>(null);
   const [imgFailed, setImgFailed] = useState(false);
   const [retryBusy, setRetryBusy] = useState(false);
@@ -59,25 +66,35 @@ export default function ItemDetailScreen() {
   }, [router]);
 
   const load = useCallback(async (signal?: AbortSignal) => {
+    const ownerId = user?.id;
+    if (!ownerId) {
+      setLoadedOwnerId(null);
+      setItem(null);
+      setStatus('auth-required');
+      return;
+    }
+    setItem(null);
+    setLoadedOwnerId(ownerId);
     if (!id) {
       setStatus('error');
       return;
     }
     if (signal?.aborted) return;
+    setRetryBusy(false);
     setStatus('loading');
     setRetryNote(null);
     try {
       const detail = await getItem(id, signal ? { signal } : undefined);
-      if (signal?.aborted) return;
+      if (signal?.aborted || activeUserIdRef.current !== ownerId) return;
       setItem(detail);
       setImgFailed(false);
       setStatus('ready');
     } catch (err) {
-      if (signal?.aborted) return;
+      if (signal?.aborted || activeUserIdRef.current !== ownerId) return;
       setItem(null);
       setStatus(err instanceof ApiError && err.status === 404 ? 'not-found' : 'error');
     }
-  }, [id]);
+  }, [id, user?.id]);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -88,14 +105,17 @@ export default function ItemDetailScreen() {
   }, [load]);
 
   async function handleRetry(): Promise<void> {
-    if (!id || retryBusy) return;
+    const ownerId = user?.id;
+    if (!id || !ownerId || retryBusy) return;
     setRetryBusy(true);
     setRetryNote(null);
     try {
       await retryItem(id);
+      if (activeUserIdRef.current !== ownerId) return;
       // Retry clears failure_reason server-side — re-fetch for fresh state.
       await load();
     } catch (err) {
+      if (activeUserIdRef.current !== ownerId) return;
       if (err instanceof ApiError && err.status === 422) {
         setRetryNote('Already picked up — pulling the latest state.');
         await load();
@@ -103,7 +123,7 @@ export default function ItemDetailScreen() {
         setRetryNote("Retry didn't go through — try again.");
       }
     } finally {
-      setRetryBusy(false);
+      if (activeUserIdRef.current === ownerId) setRetryBusy(false);
     }
   }
 
@@ -117,6 +137,11 @@ export default function ItemDetailScreen() {
   const creator = item?.owner_username || item?.owner_name || 'Unknown creator';
   const platform = (item?.platform ?? '').toUpperCase() || 'APP';
   const failed = item?.state === 'failed';
+  const visibleStatus: Status = !user?.id
+    ? 'auth-required'
+    : loadedOwnerId === user.id
+      ? status
+      : 'loading';
 
   return (
     <View style={{ flex: 1, backgroundColor: color.chatBg }}>
@@ -126,7 +151,7 @@ export default function ItemDetailScreen() {
           flexDirection: 'row',
           alignItems: 'center',
           paddingHorizontal: 18,
-          paddingTop: 54,
+          paddingTop: insets.top + space.sm,
           paddingBottom: space.md,
         }}
       >
@@ -136,8 +161,8 @@ export default function ItemDetailScreen() {
           accessibilityLabel="Back"
           hitSlop={8}
           style={{
-            width: 40,
-            height: 40,
+            width: 48,
+            height: 48,
             borderRadius: radius.pill,
             backgroundColor: alpha(color.cream, 0.1),
             borderWidth: 1.5,
@@ -169,17 +194,31 @@ export default function ItemDetailScreen() {
         >
           SAVED REEL
         </Text>
-        <View style={{ width: 40 }} />
+        <View style={{ width: 48 }} />
       </View>
 
-      {status === 'loading' ? (
+      {visibleStatus === 'loading' ? (
         <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', gap: space.md }}>
           <ActivityIndicator size="large" color={color.coral} />
-          <Text style={{ fontFamily: font.body, fontSize: 13, color: alpha(color.cream, 0.6) }}>
+          <Text style={{ fontFamily: font.body, fontSize: 15, lineHeight: 22, color: alpha(color.cream, 0.75) }}>
             Pulling up your save…
           </Text>
         </View>
-      ) : status === 'not-found' ? (
+      ) : visibleStatus === 'auth-required' ? (
+        <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', gap: space.md, paddingHorizontal: 32 }}>
+          <Text style={{ fontFamily: font.displayMedium, fontStyle: 'italic', fontSize: 22, lineHeight: 30, color: color.cream, textAlign: 'center' }}>
+            Sign in to open this save.
+          </Text>
+          <Pressable
+            onPress={() => router.replace('/(auth)/login')}
+            accessibilityRole="button"
+            accessibilityLabel="Sign in to view this save"
+            style={{ backgroundColor: color.coral, borderRadius: radius.pill, minHeight: 48, justifyContent: 'center', paddingHorizontal: space.xl }}
+          >
+            <Text style={{ fontFamily: font.display, fontSize: 12.5, color: color.ink }}>SIGN IN</Text>
+          </Pressable>
+        </View>
+      ) : visibleStatus === 'not-found' ? (
         <View
           style={{
             flex: 1,
@@ -199,18 +238,18 @@ export default function ItemDetailScreen() {
               textAlign: 'center',
             }}
           >
-            This save is gone.
+            This save isn&apos;t available.
           </Text>
           <Text
             style={{
               fontFamily: font.body,
-              fontSize: 13,
-              lineHeight: 19,
-              color: alpha(color.cream, 0.6),
+              fontSize: 15,
+              lineHeight: 22,
+              color: alpha(color.cream, 0.75),
               textAlign: 'center',
             }}
           >
-            It was deleted or belongs to another account — nothing to show here.
+            It may have been deleted or is no longer available to this account.
           </Text>
           <Pressable
             onPress={goBack}
@@ -219,17 +258,19 @@ export default function ItemDetailScreen() {
             style={{
               backgroundColor: color.coral,
               borderRadius: radius.pill,
+              minHeight: 48,
+              justifyContent: 'center',
               paddingHorizontal: space.xl,
               paddingVertical: space.md,
               marginTop: space.sm,
             }}
           >
-            <Text style={{ fontFamily: font.display, fontSize: 12.5, color: color.white }}>
+            <Text style={{ fontFamily: font.display, fontSize: 12.5, color: color.ink }}>
               ← GO BACK
             </Text>
           </Pressable>
         </View>
-      ) : status === 'error' || !item ? (
+      ) : visibleStatus === 'error' || !item ? (
         <View
           style={{
             flex: 1,
@@ -254,9 +295,9 @@ export default function ItemDetailScreen() {
           <Text
             style={{
               fontFamily: font.body,
-              fontSize: 13,
-              lineHeight: 19,
-              color: alpha(color.cream, 0.6),
+              fontSize: 15,
+              lineHeight: 22,
+              color: alpha(color.cream, 0.75),
               textAlign: 'center',
             }}
           >
@@ -269,12 +310,14 @@ export default function ItemDetailScreen() {
             style={{
               backgroundColor: color.coral,
               borderRadius: radius.pill,
+              minHeight: 48,
+              justifyContent: 'center',
               paddingHorizontal: space.xl,
               paddingVertical: space.md,
               marginTop: space.sm,
             }}
           >
-            <Text style={{ fontFamily: font.display, fontSize: 12.5, color: color.white }}>
+            <Text style={{ fontFamily: font.display, fontSize: 12.5, color: color.ink }}>
               ↻ RETRY
             </Text>
           </Pressable>
@@ -284,7 +327,7 @@ export default function ItemDetailScreen() {
           style={{ flex: 1 }}
           contentContainerStyle={{
             paddingHorizontal: 18,
-            paddingBottom: 130,
+            paddingBottom: Math.max(insets.bottom + 36, 48),
             gap: space.md,
           }}
         >
@@ -331,8 +374,9 @@ export default function ItemDetailScreen() {
           <Text
             style={{
               fontFamily: font.body,
-              fontSize: 12.5,
-              color: alpha(color.cream, 0.6),
+              fontSize: 14,
+              lineHeight: 20,
+              color: alpha(color.cream, 0.75),
             }}
             numberOfLines={1}
           >
@@ -344,8 +388,8 @@ export default function ItemDetailScreen() {
             <Text
               style={{
                 fontFamily: font.body,
-                fontSize: 14.5,
-                lineHeight: 21,
+                fontSize: 16,
+                lineHeight: 24,
                 color: color.cream,
               }}
             >
@@ -395,9 +439,9 @@ export default function ItemDetailScreen() {
               <Text
                 style={{
                   fontFamily: font.body,
-                  fontSize: 13,
-                  lineHeight: 19,
-                  color: alpha(color.cream, 0.8),
+                  fontSize: 15,
+                  lineHeight: 22,
+                  color: alpha(color.cream, 0.9),
                 }}
               >
                 {item.failure_reason || 'Something went wrong while saving this reel.'}
@@ -409,8 +453,9 @@ export default function ItemDetailScreen() {
             <Text
               style={{
                 fontFamily: font.body,
-                fontSize: 12.5,
-                color: alpha(color.cream, 0.7),
+                fontSize: 14,
+                lineHeight: 20,
+                color: alpha(color.cream, 0.85),
                 textAlign: 'center',
               }}
             >
@@ -424,6 +469,7 @@ export default function ItemDetailScreen() {
               onPress={openOriginal}
               accessibilityRole="button"
               accessibilityLabel={`Watch original on ${platform}`}
+              accessibilityHint="Opens the original post in its app or browser."
               style={{
                 flex: 1,
                 flexDirection: 'row',
@@ -432,6 +478,7 @@ export default function ItemDetailScreen() {
                 gap: 6,
                 backgroundColor: color.cream,
                 borderRadius: radius.pill,
+                minHeight: 48,
                 paddingVertical: 13,
               }}
             >
@@ -445,16 +492,18 @@ export default function ItemDetailScreen() {
                 disabled={retryBusy}
                 accessibilityRole="button"
                 accessibilityLabel="Retry processing"
+                accessibilityState={{ disabled: retryBusy, busy: retryBusy }}
                 style={{
                   flex: 1,
                   alignItems: 'center',
                   justifyContent: 'center',
                   backgroundColor: retryBusy ? alpha(color.coral, 0.5) : color.coral,
                   borderRadius: radius.pill,
+                  minHeight: 48,
                   paddingVertical: 13,
                 }}
               >
-                <Text style={{ fontFamily: font.display, fontSize: 12.5, color: color.white }}>
+                <Text style={{ fontFamily: font.display, fontSize: 12.5, color: color.ink }}>
                   {retryBusy ? 'RETRYING…' : '↻ RETRY'}
                 </Text>
               </Pressable>

@@ -226,16 +226,31 @@ class TestBackfillCategory:
 
 
 class TestWorkerBackfill:
+    @staticmethod
+    def _allow_exact_intent(monkeypatch: pytest.MonkeyPatch) -> None:
+        import app.tasks.worker_entry as worker_entry
+        from app.tasks.worker_claims import TargetIntentResult
+
+        monkeypatch.setattr(
+            worker_entry,
+            "claim_target_intent",
+            AsyncMock(return_value=TargetIntentResult("claimed", "token")),
+        )
+        monkeypatch.setattr(
+            worker_entry, "complete_target_intent", AsyncMock(return_value=True)
+        )
+
     def test_ok(self, monkeypatch: pytest.MonkeyPatch) -> None:
         mock = AsyncMock(
             return_value={"status": "ok", "category_id": _TEST_CATEGORY_ID, "matched": 2}
         )
         monkeypatch.setattr(backfill_module, "backfill_category", mock)
+        self._allow_exact_intent(monkeypatch)
         client = TestClient(create_app())
 
         resp = client.post(
             "/work/category_backfill",
-            json={"category_id": _TEST_CATEGORY_ID, "user_id": _TEST_USER_ID},
+            json={"category_id": _TEST_CATEGORY_ID, "user_id": _TEST_USER_ID, "outbox_id": "job-1", "generation": 1},
         )
 
         assert resp.status_code == 200
@@ -245,11 +260,12 @@ class TestWorkerBackfill:
     def test_error_returns_500(self, monkeypatch: pytest.MonkeyPatch) -> None:
         mock = AsyncMock(side_effect=RuntimeError("db down"))
         monkeypatch.setattr(backfill_module, "backfill_category", mock)
+        self._allow_exact_intent(monkeypatch)
         client = TestClient(create_app())
 
         resp = client.post(
             "/work/category_backfill",
-            json={"category_id": _TEST_CATEGORY_ID, "user_id": _TEST_USER_ID},
+            json={"category_id": _TEST_CATEGORY_ID, "user_id": _TEST_USER_ID, "outbox_id": "job-1", "generation": 1},
         )
 
         assert resp.status_code == 500
@@ -260,10 +276,11 @@ class TestLocalDispatcherBackfill:
     async def test_routes_to_backfill(self, monkeypatch: pytest.MonkeyPatch) -> None:
         mock = AsyncMock()
         monkeypatch.setattr(backfill_module, "backfill_category", mock)
+        TestWorkerBackfill._allow_exact_intent(monkeypatch)
 
         await dispatch_local(
             "category_backfill",
-            {"category_id": _TEST_CATEGORY_ID, "user_id": _TEST_USER_ID},
+            {"category_id": _TEST_CATEGORY_ID, "user_id": _TEST_USER_ID, "outbox_id": "job-1", "generation": 1},
         )
 
         mock.assert_awaited_once_with(_TEST_CATEGORY_ID, _TEST_USER_ID)

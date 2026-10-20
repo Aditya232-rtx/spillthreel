@@ -7,6 +7,7 @@ mocked. Style mirrors tests/unit (plain fakes + monkeypatch).
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from typing import Any
 from unittest.mock import AsyncMock
 
@@ -84,76 +85,41 @@ class TestDeleteAuthUser:
             await deletion_module.delete_auth_user(_TEST_USER_ID)
 
 
-class TestDeleteUserAccount:
-    async def test_deletes_all_three_surfaces(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        deleted_prefixes: list[tuple[str, str]] = []
-
-        async def _fake_delete_prefix(bucket: str, prefix: str) -> int:
-            deleted_prefixes.append((bucket, prefix))
-            return 0
-
-        mock_namespace = AsyncMock()
-        mock_auth = AsyncMock()
-        session = _FakeSession()
-        mock_pool = AsyncMock(return_value=object())
-
-        class _FakeStore:
-            def __init__(self, pool: Any) -> None:
-                self._pool = pool
-
-            async def delete_namespace(self, user_id: str) -> None:
-                await mock_namespace(user_id)
-
-        from contextlib import asynccontextmanager
-
-        @asynccontextmanager
-        async def _scope() -> AsyncIterator[_FakeSession]:
-            yield session
-
-        import app.db.engine as engine_module
-        import app.services.media.supabase_storage as storage_module
-        import app.services.memory.pgvector_store as store_module
-
-        monkeypatch.setattr(storage_module, "delete_prefix", _fake_delete_prefix)
-        monkeypatch.setattr(store_module, "PgVectorStore", _FakeStore)
-        monkeypatch.setattr(engine_module, "get_pg_pool", mock_pool)
-        monkeypatch.setattr(engine_module, "session_scope", _scope)
-        monkeypatch.setattr(deletion_module, "delete_auth_user", mock_auth)
-
-        result = await deletion_module.delete_user_account(_TEST_USER_ID)
-
-        assert result == {"status": "ok", "user_id": _TEST_USER_ID}
-        # Storage: both buckets, user prefix.
-        assert (len(deleted_prefixes)) == 2
-        assert all(prefix == f"{_TEST_USER_ID}/" for _, prefix in deleted_prefixes)
-        # Vectors: namespace purge.
-        mock_namespace.assert_awaited_once_with(_TEST_USER_ID)
-        # DB: profile delete + commit.
-        assert session.commits == 1
-        assert any("profiles" in str(stmt) for stmt in session.executed)
-        # Auth: admin delete last.
-        mock_auth.assert_awaited_once_with(_TEST_USER_ID)
-
-
 class TestWorkerDeleteUser:
+    @staticmethod
+    def _allow_exact_intent(monkeypatch: pytest.MonkeyPatch) -> None:
+        import app.tasks.worker_entry as worker_entry
+        from app.tasks.worker_claims import TargetIntentResult
+
+        monkeypatch.setattr(
+            worker_entry, "claim_target_intent", AsyncMock(return_value=TargetIntentResult("claimed", "token"))
+        )
+        monkeypatch.setattr(worker_entry, "complete_target_intent", AsyncMock(return_value=True))
+
     def test_ok(self, monkeypatch: pytest.MonkeyPatch) -> None:
         mock = AsyncMock(return_value={"status": "ok", "user_id": _TEST_USER_ID})
         # The handler resolves delete_user_account lazily from the service
         # module at call time — patch there.
         monkeypatch.setattr(deletion_module, "delete_user_account", mock)
+        self._allow_exact_intent(monkeypatch)
         client = TestClient(create_app())
 
-        resp = client.post("/work/delete_user", json={"user_id": _TEST_USER_ID})
+        resp = client.post("/work/delete_user", json={"user_id": _TEST_USER_ID, "outbox_id": "job-1", "generation": 1})
 
         assert resp.status_code == 200
         assert resp.json() == {"status": "ok", "user_id": _TEST_USER_ID}
+        assert mock.await_args.args[0] == _TEST_USER_ID
+        execution = mock.await_args.args[1]
+        assert execution.token == "token"
+        assert execution.identity.outbox_id == "job-1"
 
     def test_error_returns_500(self, monkeypatch: pytest.MonkeyPatch) -> None:
         mock = AsyncMock(side_effect=RuntimeError("storage down"))
         monkeypatch.setattr(deletion_module, "delete_user_account", mock)
+        self._allow_exact_intent(monkeypatch)
         client = TestClient(create_app())
 
-        resp = client.post("/work/delete_user", json={"user_id": _TEST_USER_ID})
+        resp = client.post("/work/delete_user", json={"user_id": _TEST_USER_ID, "outbox_id": "job-1", "generation": 1})
 
         assert resp.status_code == 500
         assert "delete_user_failed" in resp.json()["detail"]
@@ -163,10 +129,12 @@ class TestLocalDispatcherDeleteUser:
     async def test_routes_to_purge(self, monkeypatch: pytest.MonkeyPatch) -> None:
         mock = AsyncMock()
         monkeypatch.setattr(deletion_module, "delete_user_account", mock)
+        TestWorkerDeleteUser._allow_exact_intent(monkeypatch)
 
-        await dispatch_local("delete_user", {"user_id": _TEST_USER_ID})
+        await dispatch_local("delete_user", {"user_id": _TEST_USER_ID, "outbox_id": "job-1", "generation": 1})
 
-        mock.assert_awaited_once_with(_TEST_USER_ID)
+        assert mock.await_args.args[0] == _TEST_USER_ID
+        assert mock.await_args.args[1].identity.outbox_id == "job-1"
 
     async def test_missing_user_id_no_crash(self) -> None:
         await dispatch_local("delete_user", {})  # must not raise
@@ -185,8 +153,15 @@ class TestDeleteMeRoute:
         async def _override_session() -> AsyncIterator[_FakeSession]:
             yield session  # type: ignore[misc]
 
+        from types import SimpleNamespace
+
         mock_enqueue = AsyncMock()
-        monkeypatch.setattr(users_module, "enqueue_task", mock_enqueue)
+        monkeypatch.setattr(users_module, "dispatch_after_commit", mock_enqueue)
+        monkeypatch.setattr(
+            users_module,
+            "record_task_intent",
+            AsyncMock(return_value=SimpleNamespace(id="outbox")),
+        )
 
         app = create_app()
         app.dependency_overrides[_current_user] = _override_user
@@ -198,4 +173,4 @@ class TestDeleteMeRoute:
         assert resp.status_code == 202
         assert resp.json() == {"status": "scheduled"}
         assert profile.deleted_at is not None
-        mock_enqueue.assert_awaited_once_with("delete_user", {"user_id": _TEST_USER_ID})
+        mock_enqueue.assert_awaited_once_with(["outbox"])

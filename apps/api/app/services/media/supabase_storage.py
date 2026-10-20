@@ -14,6 +14,7 @@ proportional to the socket buffer, not the file size.
 from __future__ import annotations
 
 from pathlib import Path
+from urllib.parse import unquote, urlsplit, urlunsplit
 
 import httpx
 
@@ -31,6 +32,47 @@ class StorageError(RuntimeError):
     """Any non-2xx from Supabase Storage."""
 
 
+def _is_signed_object_path(path: str) -> bool:
+    prefix = "/storage/v1/object/sign/"
+    if not path.startswith(prefix):
+        return False
+    remainder = path[len(prefix) :]
+    if (
+        not remainder
+        or "\\" in path
+        or "%2f" in path.lower()
+        or "%5c" in path.lower()
+    ):
+        return False
+    return all(unquote(segment) not in {".", ".."} for segment in remainder.split("/"))
+
+
+def canonicalize_signed_url(value: str | None) -> str | None:
+    """Repair legacy Supabase signed URLs that omitted ``/storage/v1``.
+
+    Older pipeline versions stored ``https://<project>/object/sign/...`` even
+    though Storage serves the route beneath ``/storage/v1``. Only rewrite
+    URLs on this project's origin and the exact signed-object route; leave
+    other thumbnail providers untouched.
+    """
+    if not value:
+        return value
+    settings = get_settings()
+    project = urlsplit(settings.supabase_url)
+    parsed = urlsplit(value)
+    if parsed.scheme not in {"http", "https"} or parsed.netloc != project.netloc:
+        return value
+    if _is_signed_object_path(parsed.path):
+        return value
+    if parsed.path.startswith("/object/sign/"):
+        normalized_path = "/storage/v1" + parsed.path
+        if _is_signed_object_path(normalized_path):
+            return urlunsplit(
+                (parsed.scheme, parsed.netloc, normalized_path, parsed.query, parsed.fragment)
+            )
+    return value
+
+
 def _storage_base_url() -> str:
     settings = get_settings()
     return settings.supabase_url.rstrip("/") + "/storage/v1"
@@ -39,6 +81,8 @@ def _storage_base_url() -> str:
 def _service_auth_headers() -> dict[str, str]:
     settings = get_settings()
     key = settings.supabase_secret_key
+    if not key:
+        raise RuntimeError("supabase_storage_service_key_missing")
     # New-format secret keys go on the apikey header (Supabase rejects them
     # on Authorization: Bearer as a fail-loudly guardrail per the migration
     # docs). But Storage still accepts Bearer for backward compat and the
@@ -96,10 +140,22 @@ async def signed_url(
     signed_path = body.get("signedURL") or body.get("signedUrl")
     if not isinstance(signed_path, str) or not signed_path:
         raise StorageError(f"sign endpoint returned no URL: {body}")
-    # signed_path is `/storage/v1/object/sign/…?token=…` — needs the
-    # project URL prepended.
+    # Supabase Storage commonly returns `/object/sign/…?token=…`; its
+    # response path omits the API mount prefix used by public requests.
     settings = get_settings()
-    return settings.supabase_url.rstrip("/") + signed_path
+    project = urlsplit(settings.supabase_url)
+    parsed = urlsplit(signed_path)
+    if parsed.scheme:
+        if parsed.scheme not in {"http", "https"} or parsed.netloc != project.netloc:
+            raise StorageError("sign endpoint returned an unexpected URL origin")
+        path = parsed.path
+    else:
+        path = parsed.path
+    if path.startswith("/object/sign/"):
+        path = "/storage/v1" + path
+    if not _is_signed_object_path(path):
+        raise StorageError("sign endpoint returned an unexpected URL path")
+    return urlunsplit((project.scheme, project.netloc, path, parsed.query, parsed.fragment))
 
 
 async def download_object(bucket: str, object_key: str, dest: Path) -> Path:

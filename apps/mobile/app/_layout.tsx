@@ -1,8 +1,12 @@
-import { useEffect } from 'react';
+import { useEffect, useRef, useState } from 'react';
+import { Platform } from 'react-native';
+import * as Notifications from 'expo-notifications';
+import type { NotificationResponse } from 'expo-notifications';
 import * as Sentry from '@sentry/react-native';
 import { PostHogProvider, usePostHog } from 'posthog-react-native';
 import { useFonts } from 'expo-font';
 import { Stack, useRouter, useSegments } from 'expo-router';
+import { ShareIntentProvider, useShareIntentContext } from 'expo-share-intent';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import * as SplashScreen from 'expo-splash-screen';
@@ -12,6 +16,20 @@ import { setAnalyticsClient } from '@/lib/analytics';
 import { consumeOAuthNext, routeForOAuthNext } from '@/lib/oauth';
 import { initSentry } from '@/lib/sentry';
 import { clearPendingEmail, getPendingEmail } from '@/lib/verification';
+import {
+  decideImportSummaryRoute,
+  notificationResponseKey,
+} from '@/lib/notification-routing';
+
+const handledNotificationResponseKeys = new Set<string>();
+
+function rememberHandledNotificationResponse(key: string): void {
+  handledNotificationResponseKeys.add(key);
+  if (handledNotificationResponseKeys.size > 100) {
+    const oldest = handledNotificationResponseKeys.values().next().value;
+    if (oldest) handledNotificationResponseKeys.delete(oldest);
+  }
+}
 
 // Error monitoring first: no-op without EXPO_PUBLIC_SENTRY_DSN.
 initSentry();
@@ -37,8 +55,32 @@ SplashScreen.preventAutoHideAsync().catch(() => {
  */
 function AuthGate() {
   const { session, loading } = useAuth();
+  const { hasShareIntent } = useShareIntentContext();
   const segments = useSegments() as readonly string[];
   const router = useRouter();
+  const [notificationResponse, setNotificationResponse] = useState<NotificationResponse | null>(null);
+  const pendingResponseKey = useRef<string | null>(null);
+
+  useEffect(() => {
+    if (Platform.OS === 'web') return;
+    const receive = (response: NotificationResponse) => {
+      const key = notificationResponseKey(
+        response.notification.request.identifier,
+        response.actionIdentifier,
+        response.notification.request.content.data,
+      ) ?? 'unknown-response';
+      if (handledNotificationResponseKeys.has(key) || pendingResponseKey.current === key) return;
+      pendingResponseKey.current = key;
+      setNotificationResponse(response);
+    };
+    const subscription = Notifications.addNotificationResponseReceivedListener(receive);
+    void Notifications.getLastNotificationResponseAsync().then((response) => {
+      if (response) receive(response);
+    }).catch(() => {
+      // Native response state may be unavailable in simulator or web builds.
+    });
+    return () => subscription.remove();
+  }, []);
 
   useEffect(() => {
     if (loading) {
@@ -54,10 +96,45 @@ function AuthGate() {
     // Same for the post-OAuth name step — it navigates itself onward.
     const onYourName = inAuth && second === 'your-name';
 
+    if (notificationResponse) {
+      const response = notificationResponse;
+      const decision = decideImportSummaryRoute(
+        response.notification.request.content.data,
+        session?.user.id,
+        loading,
+      );
+      if (decision.status !== 'defer') {
+        const key = notificationResponseKey(
+          response.notification.request.identifier,
+          response.actionIdentifier,
+          response.notification.request.content.data,
+        ) ?? 'unknown-response';
+        pendingResponseKey.current = null;
+        rememberHandledNotificationResponse(key);
+        setNotificationResponse(null);
+        void Notifications.clearLastNotificationResponseAsync().catch(() => {
+          // The in-memory key still prevents duplicate routing for this session.
+        });
+        if (decision.status === 'route') {
+          router.replace({
+            pathname: '/(import)/import3',
+            params: { notification_import_id: decision.importId },
+          } as never);
+          return;
+        }
+      }
+    }
+
     if (session) {
       // Verified (or OAuth) session resolves any pending confirmation.
       void clearPendingEmail();
       if (inAuth && !onResetPassword && !onYourName) {
+        // A share can launch the app signed out. Keep that captured payload in
+        // front of the normal post-login landing route so login does not strand it.
+        if (hasShareIntent) {
+          router.replace('/share' as never);
+          return;
+        }
         consumeOAuthNext().then((next) => {
           router.replace(routeForOAuthNext(next) as never);
         });
@@ -75,7 +152,25 @@ function AuthGate() {
         }
       });
     }
-  }, [session, loading, segments, router]);
+  }, [session, loading, segments, router, hasShareIntent, notificationResponse]);
+
+  return null;
+}
+
+/** Route both cold and warm native shares into the focused save flow. */
+function ShareIntentRouter() {
+  const { hasShareIntent } = useShareIntentContext();
+  const segments = useSegments() as readonly string[];
+  const router = useRouter();
+
+  useEffect(() => {
+    if (!hasShareIntent || Platform.OS === 'web') return;
+    const onShareRoute = segments[0] === 'share';
+    const inAuth = segments[0] === '(auth)';
+    if (!onShareRoute && !inAuth) {
+      router.replace('/share' as never);
+    }
+  }, [hasShareIntent, segments, router]);
 
   return null;
 }
@@ -106,7 +201,10 @@ function RootLayout() {
       <SafeAreaProvider>
         <StatusBar style="dark" />
         <AuthGate />
-        <Stack screenOptions={{ headerShown: false }} />
+        <ShareIntentRouter />
+        <Stack screenOptions={{ headerShown: false }}>
+          <Stack.Screen name="share" options={{ headerShown: false }} />
+        </Stack>
       </SafeAreaProvider>
     </GestureHandlerRootView>
   );
@@ -126,12 +224,7 @@ const POSTHOG_KEY = process.env.EXPO_PUBLIC_POSTHOG_KEY;
 const POSTHOG_HOST = process.env.EXPO_PUBLIC_POSTHOG_HOST || 'https://us.i.posthog.com';
 
 function RootLayoutWithProviders() {
-  // Privacy: nothing automatic — no session replay, no touch/screen
-  // autocapture. All events are explicit track() calls (see lib/analytics).
-  if (!POSTHOG_KEY) {
-    return <RootLayout />;
-  }
-  return (
+  const app = POSTHOG_KEY ? (
     <PostHogProvider
       apiKey={POSTHOG_KEY}
       autocapture={false}
@@ -140,6 +233,18 @@ function RootLayoutWithProviders() {
       <AnalyticsBootstrap />
       <RootLayout />
     </PostHogProvider>
+  ) : (
+    <RootLayout />
+  );
+
+  // Privacy: nothing automatic — no session replay, no touch/screen
+  // autocapture. All events are explicit track() calls (see lib/analytics).
+  return (
+    <ShareIntentProvider
+      options={{ disabled: Platform.OS === 'web', resetOnBackground: false }}
+    >
+      {app}
+    </ShareIntentProvider>
   );
 }
 

@@ -1,5 +1,6 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { useAuth } from '@/hooks/useAuth';
 import {
   SEED_CATEGORIES,
   USER_CATEGORY_PALETTE,
@@ -56,12 +57,25 @@ function hydrate(stored: StoredUserCategory[]): CategoryDef[] {
 }
 
 export function useCategories() {
+  const { user } = useAuth();
+  const userId = user?.id ?? null;
   const [userStored, setUserStored] = useState<StoredUserCategory[]>([]);
-  const [ready, setReady] = useState(false);
+  const [loadedUserId, setLoadedUserId] = useState<string | null>(null);
+  const activeUserIdRef = useRef(userId);
+  activeUserIdRef.current = userId;
+  const ready = userId !== null && loadedUserId === userId;
 
   useEffect(() => {
     let cancelled = false;
-    AsyncStorage.getItem(STORAGE_KEY)
+    setUserStored([]);
+    setLoadedUserId(null);
+    if (!userId) {
+      return () => {
+        cancelled = true;
+      };
+    }
+    const storageKey = `${STORAGE_KEY}.${userId}`;
+    AsyncStorage.getItem(storageKey)
       .then((raw) => {
         if (cancelled) return;
         if (raw) {
@@ -73,16 +87,19 @@ export function useCategories() {
             setUserStored([]);
           }
         }
-        setReady(true);
+        setLoadedUserId(userId);
       })
-      .catch(() => setReady(true));
+      .catch(() => {
+        if (!cancelled) setLoadedUserId(userId);
+      });
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [userId]);
 
   const addCategory = useCallback(
     async (input: UserCategoryInput) => {
+      if (!userId || !ready) return;
       const trimmed = input.name.trim();
       if (!trimmed) return;
       const next: StoredUserCategory = {
@@ -92,13 +109,14 @@ export function useCategories() {
         createdAt: new Date().toISOString(),
       };
       const nextList = [...userStored, next];
-      setUserStored(nextList);
-      await AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(nextList));
+      await AsyncStorage.setItem(`${STORAGE_KEY}.${userId}`, JSON.stringify(nextList));
+      if (activeUserIdRef.current === userId) setUserStored(nextList);
     },
-    [userStored],
+    [ready, userId, userStored],
   );
 
-  const categories: CategoryDef[] = [...SEED_CATEGORIES, ...hydrate(userStored)];
+  const visibleUserCategories = ready ? userStored : [];
+  const categories: CategoryDef[] = [...SEED_CATEGORIES, ...hydrate(visibleUserCategories)];
 
   return { categories, addCategory, ready };
 }

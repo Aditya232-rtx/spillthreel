@@ -13,14 +13,38 @@ fixture covering the new labels alongside this one.
 
 from __future__ import annotations
 
+import io
+import zipfile
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 from app.services.imports.ig_parser import (
+    ArchiveLimitError,
     ParsedExport,
+    ParserError,
     parse_zip,
 )
+
+
+def _zip(path: Path, members: dict[str, bytes], *, compression: int = zipfile.ZIP_STORED) -> Path:
+    with zipfile.ZipFile(path, "w", compression=compression) as archive:
+        for name, data in members.items():
+            archive.writestr(name, data)
+    return path
+
+
+def _limits(**overrides: object) -> SimpleNamespace:
+    values: dict[str, object] = {
+        "import_max_archive_members": 100,
+        "import_max_member_uncompressed_bytes": 1024 * 1024,
+        "import_max_uncompressed_bytes": 2 * 1024 * 1024,
+        "import_max_compression_ratio": 200.0,
+        "import_max_parsed_entries": 100,
+    }
+    values.update(overrides)
+    return SimpleNamespace(**values)
 
 FIXTURE_ZIP = Path(__file__).parent.parent / "parser-corpus" / "user_export_2026_aug.zip"
 
@@ -48,6 +72,92 @@ class TestParseZip:
         # The hash itself is 16 hex chars.
         assert len(parsed.parser_schema_hash) == 16
         assert all(c in "0123456789abcdef" for c in parsed.parser_schema_hash)
+
+    def test_rejects_traversal_and_absolute_member_names(self, tmp_path: Path, monkeypatch) -> None:
+        import app.services.imports.ig_parser as parser
+
+        monkeypatch.setattr(parser, "get_settings", lambda: _limits())
+        for name in ("../saved/saved_posts.html", "/saved_posts.html", "C:\\temp\\saved_posts.html"):
+            archive = _zip(tmp_path / "unsafe.zip", {name: b"<html></html>"})
+            with pytest.raises(ParserError, match="unsafe archive member path"):
+                parse_zip(archive)
+
+    def test_rejects_duplicate_target_files(self, tmp_path: Path, monkeypatch) -> None:
+        import app.services.imports.ig_parser as parser
+
+        monkeypatch.setattr(parser, "get_settings", lambda: _limits())
+        archive = tmp_path / "duplicate.zip"
+        with zipfile.ZipFile(archive, "w") as zf:
+            zf.writestr("saved_posts.html", b"one")
+            zf.writestr("saved/saved_posts.html", b"two")
+        with pytest.raises(ParserError, match="duplicate import HTML"):
+            parse_zip(archive)
+
+    def test_rejects_encrypted_member_flag(self, tmp_path: Path, monkeypatch) -> None:
+        import app.services.imports.ig_parser as parser
+
+        monkeypatch.setattr(parser, "get_settings", lambda: _limits())
+        archive = _zip(tmp_path / "encrypted.zip", {"saved_posts.html": b"<html></html>"})
+        raw = bytearray(archive.read_bytes())
+        local = raw.find(b"PK\x03\x04")
+        central = raw.find(b"PK\x01\x02")
+        raw[local + 6] |= 1
+        raw[central + 8] |= 1
+        archive.write_bytes(raw)
+        with pytest.raises(ParserError, match="encrypted"):
+            parse_zip(archive)
+
+    @pytest.mark.parametrize(
+        ("members", "limits"),
+        [
+            ({"a": b"", "b": b""}, {"import_max_archive_members": 1}),
+            ({"saved_posts.html": b"x" * 20}, {"import_max_member_uncompressed_bytes": 10}),
+            (
+                {"saved_posts.html": b"x" * 20},
+                {"import_max_uncompressed_bytes": 10},
+            ),
+            (
+                {"saved_posts.html": b"x" * 1000},
+                {"import_max_compression_ratio": 2.0},
+            ),
+        ],
+    )
+    def test_rejects_archive_resource_limits(self, tmp_path: Path, monkeypatch, members, limits) -> None:
+        import app.services.imports.ig_parser as parser
+
+        monkeypatch.setattr(parser, "get_settings", lambda: _limits(**limits))
+        archive = _zip(tmp_path / "limited.zip", members, compression=zipfile.ZIP_DEFLATED)
+        with pytest.raises(ArchiveLimitError):
+            parse_zip(archive)
+
+    def test_rejects_nested_zip_payload(self, tmp_path: Path, monkeypatch) -> None:
+        import app.services.imports.ig_parser as parser
+
+        monkeypatch.setattr(parser, "get_settings", lambda: _limits())
+        nested = io.BytesIO()
+        with zipfile.ZipFile(nested, "w") as zf:
+            zf.writestr("inner.txt", b"nested")
+        archive = _zip(tmp_path / "nested.zip", {"saved_posts.html": nested.getvalue()})
+        with pytest.raises(ParserError, match="nested ZIP"):
+            parse_zip(archive)
+
+    def test_rejects_nested_zip_member_by_name(self, tmp_path: Path, monkeypatch) -> None:
+        import app.services.imports.ig_parser as parser
+
+        monkeypatch.setattr(parser, "get_settings", lambda: _limits())
+        archive = _zip(tmp_path / "nested-member.zip", {"saved/archive.zip": b"opaque"})
+        with pytest.raises(ParserError, match="nested ZIP"):
+            parse_zip(archive)
+
+    def test_enforces_parsed_entry_limit(self, tmp_path: Path, monkeypatch) -> None:
+        import app.services.imports.ig_parser as parser
+
+        monkeypatch.setattr(parser, "get_settings", lambda: _limits(import_max_parsed_entries=1))
+        post = parser.SavedPost("https://www.instagram.com/reel/abc/", None)
+        monkeypatch.setattr(parser, "_iter_saved_posts", lambda *_args: iter((post, post)))
+        archive = _zip(tmp_path / "entries.zip", {"saved_posts.html": b"synthetic"})
+        with pytest.raises(ArchiveLimitError, match="parsed entries"):
+            parse_zip(archive)
 
 
 class TestPostShape:

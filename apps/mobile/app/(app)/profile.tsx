@@ -1,10 +1,9 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Modal, Pressable, ScrollView, Text, View } from 'react-native';
 import { useRouter } from 'expo-router';
 import { Svg, Path, Polyline } from 'react-native-svg';
 import { Shadowed } from '@/components/Shadowed';
 import { AvatarView } from '@/components/AvatarView';
-import { CONNECTED_SOURCES } from '@/data/profile';
 import { PillButton } from '@/components/PillButton';
 import { TextField } from '@/components/TextField';
 import { useAuth } from '@/hooks/useAuth';
@@ -15,7 +14,20 @@ import {
 } from '@/lib/avatar';
 import { getFirstName, getFullName, rememberDisplayName } from '@/lib/display-name';
 import { supabase } from '@/lib/supabase';
+import { api } from '@/lib/api';
 import { alpha, border, color, font, radius, space } from '@/theme/tokens';
+
+type ProfileItemsPage = {
+  items: Array<{ platform: string }>;
+  total_count: number;
+};
+
+type ProfileCategory = { id: string };
+
+type ProfileStats =
+  | { status: 'loading' }
+  | { status: 'ready'; saves: number; categories: number; sources: string[] }
+  | { status: 'unavailable' };
 
 function joinedLabel(createdAt: string | undefined): string {
   if (!createdAt) return '';
@@ -30,6 +42,34 @@ export default function ProfileScreen() {
   const fullName = getFullName(user) ?? getFirstName(user);
   const initial = (fullName[0] ?? 'S').toUpperCase();
   const handle = user?.email ? `@${user.email.split('@')[0]}` : '@you';
+
+  const [profileStats, setProfileStats] = useState<ProfileStats>({ status: 'loading' });
+
+  useEffect(() => {
+    const controller = new AbortController();
+    if (!user?.id) {
+      setProfileStats({ status: 'unavailable' });
+      return () => controller.abort();
+    }
+
+    setProfileStats({ status: 'loading' });
+    void Promise.all([
+      api.get<ProfileItemsPage>('/v1/items?limit=30', { signal: controller.signal }),
+      api.get<ProfileCategory[]>('/v1/categories', { signal: controller.signal }),
+    ]).then(([items, categories]) => {
+      if (controller.signal.aborted) return;
+      setProfileStats({
+        status: 'ready',
+        saves: items.total_count,
+        categories: categories.length,
+        sources: [...new Set(items.items.map((item) => item.platform.trim()).filter(Boolean))],
+      });
+    }).catch(() => {
+      if (!controller.signal.aborted) setProfileStats({ status: 'unavailable' });
+    });
+
+    return () => controller.abort();
+  }, [user?.id]);
 
   const [editingName, setEditingName] = useState(false);
   const [draftName, setDraftName] = useState('');
@@ -214,44 +254,48 @@ export default function ProfileScreen() {
       <Shadowed offset={4} radius={radius.md}>
         <View style={{ flexDirection: 'row', borderWidth: border.bold, borderColor: color.ink, borderRadius: radius.md, paddingVertical: space.lg, backgroundColor: color.white }}>
           <View style={{ flex: 1, alignItems: 'center' }}>
-            <Text style={{ fontFamily: font.display, fontSize: 22, color: color.ink }}>342</Text>
-            <Text style={{ fontFamily: font.body, fontSize: 10.5, color: 'rgba(21,23,15,0.6)' }}>REELS</Text>
+            <Text style={{ fontFamily: font.display, fontSize: 22, color: color.ink }}>
+              {profileStats.status === 'ready' ? profileStats.saves : profileStats.status === 'loading' ? '…' : '—'}
+            </Text>
+            <Text style={{ fontFamily: font.body, fontSize: 10.5, color: 'rgba(21,23,15,0.6)' }}>SAVES</Text>
           </View>
           <View style={{ width: 2, backgroundColor: 'rgba(21,23,15,0.2)' }} />
           <View style={{ flex: 1, alignItems: 'center' }}>
-            <Text style={{ fontFamily: font.display, fontSize: 22, color: color.ink }}>6</Text>
+            <Text style={{ fontFamily: font.display, fontSize: 22, color: color.ink }}>
+              {profileStats.status === 'ready' ? profileStats.categories : profileStats.status === 'loading' ? '…' : '—'}
+            </Text>
             <Text style={{ fontFamily: font.body, fontSize: 10.5, color: 'rgba(21,23,15,0.6)' }}>CATEGORIES</Text>
-          </View>
-          <View style={{ width: 2, backgroundColor: 'rgba(21,23,15,0.2)' }} />
-          <View style={{ flex: 1, alignItems: 'center' }}>
-            <Text style={{ fontFamily: font.display, fontSize: 22, color: color.coral }}>18</Text>
-            <Text style={{ fontFamily: font.body, fontSize: 10.5, color: 'rgba(21,23,15,0.6)' }}>DAY STREAK</Text>
           </View>
         </View>
       </Shadowed>
 
-      <Text style={{ fontFamily: font.body, fontSize: 10.5, letterSpacing: 0.6, color: 'rgba(21,23,15,0.55)' }}>CONNECTED SOURCES</Text>
-
       <View style={{ gap: space.sm }}>
-        {CONNECTED_SOURCES.map((src) => (
-          <View
-            key={src.id}
-            style={{
-              flexDirection: 'row',
-              alignItems: 'center',
-              justifyContent: 'space-between',
-              backgroundColor: src.bg,
-              borderWidth: border.standard,
-              borderColor: color.ink,
-              borderRadius: radius.sm,
-              paddingHorizontal: space.lg,
-              paddingVertical: space.md + 2,
-            }}
-          >
-            <Text style={{ fontFamily: font.display, fontSize: 15, color: color.ink }}>{src.name}</Text>
-            <Text style={{ fontFamily: font.body, fontSize: 10.5, color: 'rgba(21,23,15,0.75)' }}>{src.status}</Text>
+        <Text style={{ fontFamily: font.body, fontSize: 10.5, letterSpacing: 0.6, color: 'rgba(21,23,15,0.55)' }}>RECENT SAVES FROM</Text>
+        {profileStats.status === 'loading' ? (
+          <Text style={{ fontFamily: font.body, fontSize: 14, color: color.ink }}>Loading your saved sources…</Text>
+        ) : profileStats.status === 'unavailable' ? (
+          <Text style={{ fontFamily: font.body, fontSize: 14, color: color.ink }}>Saved sources are temporarily unavailable.</Text>
+        ) : profileStats.sources.length ? (
+          <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: space.sm }}>
+            {profileStats.sources.map((source) => (
+              <View
+                key={source}
+                style={{
+                  borderWidth: border.standard,
+                  borderColor: color.ink,
+                  borderRadius: radius.pill,
+                  backgroundColor: color.gold,
+                  paddingHorizontal: space.md,
+                  paddingVertical: space.sm,
+                }}
+              >
+                <Text style={{ fontFamily: font.display, fontSize: 13, color: color.ink }}>{source.toUpperCase()}</Text>
+              </View>
+            ))}
           </View>
-        ))}
+        ) : (
+          <Text style={{ fontFamily: font.body, fontSize: 14, color: color.ink }}>Your saved sources will appear here.</Text>
+        )}
       </View>
 
       <Text

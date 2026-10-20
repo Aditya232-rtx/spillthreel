@@ -1,9 +1,7 @@
-"""Cloud Tasks enqueue helpers — abstracted so local dev can run inline.
+"""Task transport for Cloud Tasks and the local worker shim.
 
-In prod, tasks are POSTed via Google Cloud Tasks to the worker Cloud Run
-service (`worker_base_url` in settings). In dev, we short-circuit to an
-in-process asyncio task so `docker compose up` doesn't need a real Cloud
-Tasks emulator.
+Database durability and retries live in :mod:`app.tasks.outbox`; this module
+only submits an already-committed logical job to its transport.
 """
 
 from __future__ import annotations
@@ -18,80 +16,85 @@ from app.settings import get_settings
 
 _logger = get_logger(__name__)
 
-TaskType = Literal["ingest", "import", "enhance", "delete_user", "category_backfill"]
+TaskType = Literal[
+    "ingest", "import", "enhance", "delete_user", "category_backfill", "import_summary"
+]
 
-# Fire-and-forget tasks must be referenced or the event loop may cancel
-# them mid-flight on GC. Entries remove themselves when done.
-_BACKGROUND_TASKS: set[asyncio.Task[None]] = set()
-
-# TaskType -> (settings attr holding the queue name, worker route).
-# delete_user / category_backfill have no dedicated queue in
-# infra/modules/cloud_tasks (three queues per architecture.md), so they
-# share the ingest queue. enhance hits /work/enhance — the lighter
-# analyze→index re-run triggered by the user "Enhance" action.
 _TASK_ROUTES: dict[str, tuple[str, str]] = {
     "ingest": ("cloud_tasks_queue_ingest", "ingest"),
     "enhance": ("cloud_tasks_queue_enhance", "enhance"),
     "import": ("cloud_tasks_queue_import", "import"),
     "delete_user": ("cloud_tasks_queue_ingest", "delete_user"),
     "category_backfill": ("cloud_tasks_queue_ingest", "category_backfill"),
+    "import_summary": ("cloud_tasks_queue_ingest", "import_summary"),
 }
-
-# Cloud Tasks resource names allow letters, digits, hyphens, underscores.
 _TASK_NAME_RE = re.compile(r"[^A-Za-z0-9_-]")
+_CLOUD_RPC_TIMEOUT_SECONDS = 5.0
+# Cloud Tasks permits HTTP dispatch deadlines up to 30 minutes. Media
+# ingestion may outlive its 10-minute default, so keep this above the worker
+# request timeout configured for Cloud Run (25 minutes).
+_CLOUD_TASKS_DISPATCH_DEADLINE_SECONDS = 30 * 60
 
 
-def _task_name(parent: str, dedup_key: str) -> str:
-    safe = _TASK_NAME_RE.sub("-", dedup_key)[:500]
-    return f"{parent}/tasks/{safe}"
+def logical_task_name_key(
+    task_type: str,
+    target_type: str,
+    target_id: str,
+    generation: int,
+    *,
+    delivery_attempt: int = 1,
+) -> str:
+    """Queue name for one attempt to deliver an immutable logical identity."""
+    raw = f"{task_type}-{target_type}-{target_id}-g{generation}-d{delivery_attempt}"
+    return _TASK_NAME_RE.sub("-", raw)[:500]
+
+
+def uses_local_transport() -> bool:
+    """Whether dev dispatch executes a handler in this process.
+
+    Local handlers run only in the durable outbox runner. Request handlers must
+    leave those rows pending so media work cannot extend request latency.
+    """
+    settings = get_settings()
+    return settings.environment == "dev" and _cloud_configuration_missing(settings)
+
+
+def _cloud_configuration_missing(settings: Any) -> bool:
+    return not all(
+        (
+            settings.worker_base_url,
+            settings.gcp_project_id,
+            settings.cloud_tasks_oidc_sa_email,
+        )
+    )
 
 
 async def enqueue_task(
     task_type: TaskType,
-    payload: dict[str, str | int | float],
+    payload: dict[str, Any],
     *,
-    dedup_key: str | None = None,
+    logical_key: str,
 ) -> None:
-    """Enqueue a background task.
-
-    `dedup_key`: if the queue is configured for named-task dedup, using
-    the same key within the dedup window will drop the second enqueue
-    silently. Used e.g. by ingestion retries.
-    """
-    settings = get_settings()
-    _logger.info(
-        "task.enqueue",
-        task_type=task_type,
-        payload=payload,
-        dedup_key=dedup_key,
-        env=settings.environment,
-    )
-
-    if settings.environment == "dev" and settings.worker_base_url is None:
-        # Local shortcut — run in-process so `docker compose up` doesn't
-        # need a real Cloud Tasks emulator.
+    """Submit a committed outbox intent; errors are handled by its dispatcher."""
+    if uses_local_transport():
         from app.tasks.local_dispatcher import dispatch_local
 
-        task = asyncio.create_task(dispatch_local(task_type, payload))
-        _BACKGROUND_TASKS.add(task)
-        task.add_done_callback(_BACKGROUND_TASKS.discard)
+        if not await dispatch_local(task_type, payload):
+            raise RuntimeError("local_dispatch_rejected_payload")
         return
-
-    # worker_base_url is set (staging/prod, or dev pointed at a worker):
-    # real Cloud Tasks HTTP push. Fail CLOSED outside dev — a dropped
-    # ingest must page, never vanish into a warning log.
-    await _enqueue_cloud_task(task_type, payload, dedup_key=dedup_key)
+    await _enqueue_cloud_task(task_type, payload, logical_key=logical_key)
 
 
 async def _enqueue_cloud_task(
     task_type: TaskType,
-    payload: dict[str, str | int | float],
+    payload: dict[str, Any],
     *,
-    dedup_key: str | None,
+    logical_key: str,
 ) -> None:
-    # Deferred import — google-cloud-tasks lives in the `worker` extra
-    # only, keeping the api image lean.
+    from google.api_core.exceptions import AlreadyExists
+    from google.api_core.retry import Retry
     from google.cloud import tasks_v2
+    from google.protobuf.duration_pb2 import Duration
 
     settings = get_settings()
     queue_attr, route = _TASK_ROUTES[task_type]
@@ -99,62 +102,49 @@ async def _enqueue_cloud_task(
     base_url = (settings.worker_base_url or "").rstrip("/")
     project = settings.gcp_project_id
     sa_email = settings.cloud_tasks_oidc_sa_email
+    if _cloud_configuration_missing(settings):
+        if settings.environment == "dev":
+            from app.tasks.local_dispatcher import dispatch_local
 
-    missing = [
-        name
-        for name, value in (
-            ("WORKER_BASE_URL", settings.worker_base_url),
-            ("GCP_PROJECT_ID", project),
-            ("CLOUD_TASKS_OIDC_SA_EMAIL", sa_email),
-        )
-        if not value
-    ]
-    if missing:
-        msg = f"cloud tasks not configured (missing: {', '.join(missing)})"
-        _logger.error("task.cloud_tasks_missing_config", task_type=task_type, missing=missing)
-        if settings.environment != "dev":
-            raise RuntimeError(msg)
-        # Dev explicitly pointed at a worker but misconfigured — fall
-        # back to the local dispatcher so the loop keeps working.
-        from app.tasks.local_dispatcher import dispatch_local
+            if not await dispatch_local(task_type, payload):
+                raise RuntimeError("local_dispatch_rejected_payload")
+            return
+        raise RuntimeError("cloud_tasks_missing_configuration")
 
-        await dispatch_local(task_type, payload)
-        return
-
-    # mypy: missing-branch above guarantees non-None; assert for the checker.
     assert project is not None and sa_email is not None and base_url
-
     url = f"{base_url}/work/{route}"
     parent = f"projects/{project}/locations/{settings.gcp_region}/queues/{queue_name}"
-    body = json.dumps(payload).encode("utf-8")
-
     task: dict[str, Any] = {
+        "name": f"{parent}/tasks/{logical_key}",
+        "dispatch_deadline": Duration(seconds=_CLOUD_TASKS_DISPATCH_DEADLINE_SECONDS),
         "http_request": {
             "http_method": tasks_v2.HttpMethod.POST,
             "url": url,
             "headers": {"Content-Type": "application/json"},
-            "body": body,
-            # OIDC mint comes from the api Cloud Run runtime SA —
-            # infra must grant it roles/run.invoker on the worker.
+            "body": json.dumps(payload).encode("utf-8"),
             "oidc_token": {"service_account_email": sa_email, "audience": url},
-        }
+        },
     }
-    if dedup_key:
-        task["name"] = _task_name(parent, dedup_key)
-
+    client = tasks_v2.CloudTasksClient()
+    request = tasks_v2.CreateTaskRequest(parent=parent, task=task)
     try:
-        client = tasks_v2.CloudTasksClient()
         await asyncio.to_thread(
             client.create_task,
-            tasks_v2.CreateTaskRequest(parent=parent, task=task),
+            request,
+            retry=Retry(initial=0.2, maximum=1.0, multiplier=2.0, deadline=3.0),
+            timeout=_CLOUD_RPC_TIMEOUT_SECONDS,
         )
-    except Exception as e:
-        _logger.exception("task.cloud_tasks_push_failed", task_type=task_type, queue=queue_name)
-        if settings.environment != "dev":
-            raise RuntimeError(f"cloud tasks push failed: {e}") from e
-        from app.tasks.local_dispatcher import dispatch_local
-
-        await dispatch_local(task_type, payload)
+    except AlreadyExists:
+        # The named task is derived only from (operation,target,generation),
+        # so this exact collision is the same logical outbox delivery.
+        _logger.info("task.cloud_tasks_already_exists", task_type=task_type)
         return
-
-    _logger.info("task.cloud_tasks_enqueued", task_type=task_type, queue=queue_name, url=url)
+    except Exception as exc:
+        # Exception strings may contain request data, endpoints or credentials.
+        _logger.warning(
+            "task.cloud_tasks_push_failed",
+            task_type=task_type,
+            error_code=type(exc).__name__,
+        )
+        raise RuntimeError("cloud_tasks_push_failed") from None
+    _logger.info("task.cloud_tasks_enqueued", task_type=task_type, queue=queue_name)

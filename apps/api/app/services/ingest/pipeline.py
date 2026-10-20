@@ -44,11 +44,15 @@ from app.observability.logging import get_logger
 from app.services.extractors.base import ExtractorError, ExtractResult
 from app.services.extractors.registry import extract as extractor_extract
 from app.services.extractors.scraper.base import SourceGoneError
-from app.services.ingest.platform_detect import is_shorts_url
+from app.services.ingest.platform_detect import UnsupportedPlatformError, detect_platform, is_shorts_url
+from app.services.imports.entries import sync_import_entries_for_item
 from app.services.llm.base import AudioTrack, Frame, StructuredSummary
 from app.services.llm.gemini import GeminiSummaryModel
 from app.services.llm.groq_whisper import GroqWhisperModel
 from app.services.media import ffmpeg
+from app.services.media.supabase_storage import (
+    delete_object as storage_delete,
+)
 from app.services.media.supabase_storage import (
     signed_url as storage_signed_url,
 )
@@ -58,6 +62,12 @@ from app.services.media.supabase_storage import (
 from app.services.memory.base import IndexedItem
 from app.services.memory.pgvector_store import PgVectorStore
 from app.settings import get_settings
+from app.tasks.worker_claims import (
+    WorkerLease,
+    finalize_worker_in_session,
+    lease_is_current,
+    renew_worker_lease,
+)
 
 _logger = get_logger(__name__)
 
@@ -183,6 +193,19 @@ def _extract_youtube_id(url: str) -> str | None:
     return None
 
 
+def _validate_source_url(item: Item) -> None:
+    """Reject non-HTTPS, unsupported, or platform-mismatched fetch targets."""
+    try:
+        parsed = urlparse(item.source_url)
+        source_platform = detect_platform(item.source_url)
+    except (UnsupportedPlatformError, ValueError) as exc:
+        raise PipelineError("source URL is not an allowed social platform URL") from exc
+    if parsed.scheme.lower() != "https":
+        raise PipelineError("source URL must use HTTPS")
+    if source_platform != item.platform:
+        raise PipelineError("source URL platform does not match saved item")
+
+
 _ISO8601_DURATION_RE = re.compile(
     r"^P"
     r"(?:(?P<days>\d+)D)?"
@@ -215,7 +238,11 @@ async def _fetch_oembed(canonical_url: str) -> _YouTubeMetadata:
     (private/deleted) → source_gone. Anything else non-2xx is a
     transport-side failure → PipelineError (retryable via failed state).
     """
-    async with httpx.AsyncClient(timeout=_YOUTUBE_HTTP_TIMEOUT_SECONDS) as client:
+    async with httpx.AsyncClient(
+        timeout=_YOUTUBE_HTTP_TIMEOUT_SECONDS,
+        follow_redirects=False,
+        trust_env=False,
+    ) as client:
         try:
             resp = await client.get(
                 _YOUTUBE_OEMBED_URL, params={"url": canonical_url, "format": "json"}
@@ -250,7 +277,11 @@ async def _fetch_video_details(video_id: str, api_key: str) -> _YouTubeMetadata 
     Fields per the videos.list docs: snippet.title/description/channelTitle,
     contentDetails.duration (ISO 8601), status.privacyStatus/uploadStatus.
     """
-    async with httpx.AsyncClient(timeout=_YOUTUBE_HTTP_TIMEOUT_SECONDS) as client:
+    async with httpx.AsyncClient(
+        timeout=_YOUTUBE_HTTP_TIMEOUT_SECONDS,
+        follow_redirects=False,
+        trust_env=False,
+    ) as client:
         try:
             resp = await client.get(
                 _YOUTUBE_VIDEOS_URL,
@@ -345,7 +376,7 @@ async def _download_youtube_thumbnail(thumb_url: str, dest_dir: Path) -> Path:
         raise PipelineError(f"youtube_thumbnail_failed: {e}") from e
 
 
-async def _run_youtube_native(ctx: _RunContext, item: Item) -> None:
+async def _run_youtube_native(ctx: _RunContext, item: Item, lease: WorkerLease) -> None:
     """YouTube native ingest: metadata → guardrails → thumbnail → Gemini URL input."""
     source_url = item.source_url
     video_id = _extract_youtube_id(source_url)
@@ -353,8 +384,9 @@ async def _run_youtube_native(ctx: _RunContext, item: Item) -> None:
     # resolve to the same video, so normalize before sending.
     canonical_url = f"https://www.youtube.com/watch?v={video_id}" if video_id else source_url
 
-    await _emit_event(item.id, "downloading", "analyzing")
+    await _emit_event(item.id, "downloading", "analyzing", lease=lease)
 
+    await _ensure_lease(lease)
     oembed = await _fetch_oembed(canonical_url)
 
     details: _YouTubeMetadata | None = None
@@ -391,6 +423,7 @@ async def _run_youtube_native(ctx: _RunContext, item: Item) -> None:
     thumb_url = f"https://i.ytimg.com/vi/{video_id}/hqdefault.jpg"
     thumb_path = await _download_youtube_thumbnail(thumb_url, ctx.workdir)
 
+    await _ensure_lease(lease)
     summary = await GeminiSummaryModel().summarize_youtube(
         canonical_url,
         title=title,
@@ -402,6 +435,10 @@ async def _run_youtube_native(ctx: _RunContext, item: Item) -> None:
         # Pin the row to the metered duration (not the model's estimate)
         # so cost/cap accounting stays exact.
         summary.duration_seconds = duration
+
+    await _emit_event(
+        item.id, "analyzing", "indexing", detail={"stage": "summary_generated"}, lease=lease
+    )
 
     await _finish_indexed(
         ctx,
@@ -415,10 +452,11 @@ async def _run_youtube_native(ctx: _RunContext, item: Item) -> None:
         duration_seconds=duration if duration is not None else float(summary.duration_seconds),
         transcript_source="gemini-youtube",
         model_frames=0,
+        lease=lease,
     )
 
 
-async def ingest_item(item_id: str) -> None:
+async def ingest_item(item_id: str, lease: WorkerLease) -> None:
     """Full pipeline for a single item id.
 
     Idempotent-ish: if the item is already `fully_indexed` we no-op.
@@ -426,16 +464,18 @@ async def ingest_item(item_id: str) -> None:
     queue level (exponential backoff, 3 attempts before failed).
     """
     async with session_scope() as session:
-        item = await _lock_and_transition_downloading(session, item_id)
+        item = await _lock_and_transition_downloading(session, item_id, lease)
+    if item is None:
+        return
 
     workdir = Path(tempfile.mkdtemp(prefix=f"spill-ingest-{item.id}-"))
     ctx = _RunContext(item_id=item.id, user_id=item.user_id, workdir=workdir)
 
     try:
-        await _run(ctx, item)
+        await _run(ctx, item, lease)
     except Exception as e:
         _logger.exception("ingest.failed", item_id=item.id, err=str(e))
-        await _mark_failed(item.id, str(e)[:500])
+        await _mark_failed(item.id, str(e)[:500], lease)
         raise
     finally:
         # TRD §15.7 — source video destroyed within 15 min. Workdir has
@@ -443,7 +483,12 @@ async def ingest_item(item_id: str) -> None:
         shutil.rmtree(workdir, ignore_errors=True)
 
 
-async def _run(ctx: _RunContext, item: Item) -> None:
+async def _run(ctx: _RunContext, item: Item, lease: WorkerLease) -> None:
+    # Database rows can predate the HTTPS-only intake contract or be inserted
+    # outside POST /saves. Validate again at the fetch boundary and bind the
+    # stored platform to the URL host before invoking any extractor/provider.
+    _validate_source_url(item)
+
     # YouTube native path FIRST: no download, no ffmpeg, no extractor
     # registry. Gemini reads the public URL server-side.
     #
@@ -456,24 +501,25 @@ async def _run(ctx: _RunContext, item: Item) -> None:
     # for production traffic.
     if item.platform == "youtube" and _youtube_native_enabled():
         try:
-            await _run_youtube_native(ctx, item)
+            await _run_youtube_native(ctx, item, lease)
         except _YouTubeSourceGoneError as e:
-            await _mark_source_gone(item.id, str(e) or "youtube_not_public")
+            await _mark_source_gone(item.id, str(e) or "youtube_not_public", lease)
         return
 
     # Step 2: extract media.
-    await _emit_event(item.id, "downloading", "analyzing")
+    await _emit_event(item.id, "downloading", "analyzing", lease=lease)
+    await _ensure_lease(lease)
     try:
         result = await extractor_extract(item.source_url)
     except SourceGoneError as e:
         # Part D: deleted/private/not-found → terminal `source_gone`
         # (not `failed`; Cloud Tasks must not retry it into existence).
-        await _mark_source_gone(item.id, str(e)[:500] or "source_gone")
+        await _mark_source_gone(item.id, str(e)[:500] or "source_gone", lease)
         return
     if result.video_path is None and result.image_paths:
         # Image branch (scraper / gallery-dl photo posts): analyze the
         # images as Gemini frames, then rejoin the shared tail below.
-        await _run_image_branch(ctx, item, result)
+        await _run_image_branch(ctx, item, result, lease)
         return
     if not result.video_path:
         raise PipelineError("extractor returned no video path")
@@ -513,8 +559,13 @@ async def _run(ctx: _RunContext, item: Item) -> None:
     else:
         summary_audio = audio_track
 
+    await _ensure_lease(lease)
     summary = await GeminiSummaryModel().summarize(
         frames=frames, audio=summary_audio, transcript=pretranscript
+    )
+
+    await _emit_event(
+        item.id, "analyzing", "indexing", detail={"stage": "summary_generated"}, lease=lease
     )
 
     await _finish_indexed(
@@ -529,6 +580,7 @@ async def _run(ctx: _RunContext, item: Item) -> None:
         duration_seconds=probe.duration_seconds,
         transcript_source="groq" if pretranscript else "gemini",
         model_frames=len(frames),
+        lease=lease,
     )
 
 
@@ -538,7 +590,9 @@ async def _run(ctx: _RunContext, item: Item) -> None:
 _MAX_IMAGE_FRAMES = 10
 
 
-async def _run_image_branch(ctx: _RunContext, item: Item, result: ExtractResult) -> None:
+async def _run_image_branch(
+    ctx: _RunContext, item: Item, result: ExtractResult, lease: WorkerLease
+) -> None:
     """Photo-post ingest: images → Gemini frames → shared indexed tail.
 
     Covers single photos and carousels (up to ``_MAX_IMAGE_FRAMES``).
@@ -551,7 +605,12 @@ async def _run_image_branch(ctx: _RunContext, item: Item, result: ExtractResult)
     image_paths = list(result.image_paths[:_MAX_IMAGE_FRAMES])
     frames = [Frame(path=p, timestamp_seconds=float(i)) for i, p in enumerate(image_paths)]
 
+    await _ensure_lease(lease)
     summary = await GeminiSummaryModel().summarize(frames=frames, audio=None, transcript=None)
+
+    await _emit_event(
+        item.id, "analyzing", "indexing", detail={"stage": "summary_generated"}, lease=lease
+    )
 
     duration = result.duration_seconds or 0.0
     if not duration:
@@ -569,6 +628,7 @@ async def _run_image_branch(ctx: _RunContext, item: Item, result: ExtractResult)
         duration_seconds=duration,
         transcript_source="gemini",
         model_frames=len(frames),
+        lease=lease,
     )
 
 
@@ -585,6 +645,7 @@ async def _finish_indexed(
     duration_seconds: float,
     transcript_source: str,
     model_frames: int,
+    lease: WorkerLease,
 ) -> None:
     """SHARED tail for both ingest branches (downloaded + YouTube native).
 
@@ -598,18 +659,23 @@ async def _finish_indexed(
     # Step 6: upload thumbnail to Supabase Storage.
     #   Object key: {user_id}/{item_id}.jpg — the Storage RLS policies
     #   require this exact prefix for cross-user isolation.
-    thumb_key = f"{ctx.user_id}/{ctx.item_id}.jpg"
-    await storage_upload(
-        bucket=settings.supabase_bucket_media,
-        object_key=thumb_key,
-        source=thumb_path,
-        content_type="image/jpeg",
-    )
-    thumbnail_url = await storage_signed_url(
-        bucket=settings.supabase_bucket_media,
-        object_key=thumb_key,
-        ttl_seconds=60 * 60 * 24 * 30,  # 30d — matches Cloud CDN cache TTL
-    )
+    await _ensure_lease(lease)
+    thumb_key = f"{ctx.user_id}/{ctx.item_id}/attempt-{lease.token[:16]}.jpg"
+    try:
+        await storage_upload(
+            bucket=settings.supabase_bucket_media,
+            object_key=thumb_key,
+            source=thumb_path,
+            content_type="image/jpeg",
+        )
+        thumbnail_url = await storage_signed_url(
+            bucket=settings.supabase_bucket_media,
+            object_key=thumb_key,
+            ttl_seconds=60 * 60 * 24 * 30,  # 30d — matches Cloud CDN cache TTL
+        )
+    except Exception:
+        await storage_delete(bucket=settings.supabase_bucket_media, object_key=thumb_key)
+        raise
 
     # Step 7: embed + write into pgvector, scoped to the user.
     text_corpus = "\n".join(
@@ -628,34 +694,45 @@ async def _finish_indexed(
             ],
         )
     )
-    await PgVectorStore(await get_pg_pool()).write(
-        user_id=ctx.user_id,
-        item=IndexedItem(
-            item_id=ctx.item_id,
-            text_corpus=text_corpus,
-            metadata={
-                "item_id": ctx.item_id,
-                "platform": item.platform,
-                "saved_at": item.saved_at.isoformat(),
-                "duration_seconds": duration_seconds,
-                "sentiment": summary.sentiment.value,
-                "primary_language": summary.primary_language,
-                "topics": summary.topics,
-                "owner_username": owner_username,
-            },
-        ),
-    )
+    await _ensure_lease(lease)
+    try:
+        await PgVectorStore(await get_pg_pool()).write(
+            user_id=ctx.user_id,
+            item=IndexedItem(
+                item_id=ctx.item_id,
+                text_corpus=text_corpus,
+                metadata={
+                    "item_id": ctx.item_id,
+                    "platform": item.platform,
+                    "saved_at": item.saved_at.isoformat(),
+                    "duration_seconds": duration_seconds,
+                    "sentiment": summary.sentiment.value,
+                    "primary_language": summary.primary_language,
+                    "topics": summary.topics,
+                    "owner_username": owner_username,
+                },
+            ),
+            worker_lease=lease,
+        )
+    except Exception:
+        await storage_delete(bucket=settings.supabase_bucket_media, object_key=thumb_key)
+        raise
 
     # Step 8-9: hydrate the row + append audit event.
-    await _mark_fully_indexed(
-        item_id=ctx.item_id,
-        summary=summary,
-        thumbnail_url=thumbnail_url,
-        owner_name=owner_name,
-        owner_username=owner_username,
-        owner_url=owner_url,
-        caption=caption,
-    )
+    try:
+        await _mark_fully_indexed(
+            item_id=ctx.item_id,
+            summary=summary,
+            thumbnail_url=thumbnail_url,
+            owner_name=owner_name,
+            owner_username=owner_username,
+            owner_url=owner_url,
+            caption=caption,
+            lease=lease,
+        )
+    except Exception:
+        await storage_delete(bucket=settings.supabase_bucket_media, object_key=thumb_key)
+        raise
 
     # Steps 10-11 (SSE + push): Phase 3 — logging placeholder here so
     # transitions are still visible during pre-Phase-3 dev.
@@ -669,20 +746,30 @@ async def _finish_indexed(
     )
 
 
+async def _ensure_lease(lease: WorkerLease) -> None:
+    """Renew immediately before a bounded external stage; fail closed if lost."""
+    if not await renew_worker_lease(lease):
+        raise PipelineError("worker lease lost")
+
+
 # ---------------------------------------------------------------------------
 # DB helpers — each one runs in its own short transaction so the pipeline's
 # expensive middle steps don't hold a row lock while ffmpeg + Gemini run.
 # ---------------------------------------------------------------------------
 
 
-async def _lock_and_transition_downloading(session: AsyncSession, item_id: str) -> Item:
+async def _lock_and_transition_downloading(
+    session: AsyncSession, item_id: str, lease: WorkerLease
+) -> Item | None:
+    if not await lease_is_current(session, lease):
+        return None
     stmt = select(Item).where(Item.id == item_id).with_for_update()
     item = (await session.execute(stmt)).scalar_one_or_none()
     if item is None:
         raise PipelineError(f"item {item_id} not found")
     if item.state == "fully_indexed":
-        # Idempotent — return without doing anything.
-        return item
+        # The durable item already proves completion; do not call providers.
+        return None
 
     prev_state = item.state
     item.state = "downloading"
@@ -700,13 +787,23 @@ async def _lock_and_transition_downloading(session: AsyncSession, item_id: str) 
 
 
 async def _emit_event(
-    item_id: str, from_state: str, to_state: str, detail: dict[str, Any] | None = None
+    item_id: str,
+    from_state: str,
+    to_state: str,
+    detail: dict[str, Any] | None = None,
+    *,
+    lease: WorkerLease,
 ) -> None:
     async with session_scope() as session:
+        if not await lease_is_current(session, lease):
+            raise PipelineError("worker lease lost")
         # Also flip items.state at the same time — the state machine is
         # kept in-sync with the audit trail per architecture.md §4.1.
         item = (await session.execute(select(Item).where(Item.id == item_id))).scalar_one()
         item.state = to_state
+        await sync_import_entries_for_item(
+            session, item_id=item.id, owner_id=item.user_id, item_state=to_state
+        )
         session.add(
             IngestionEvent(
                 id=str(ulid.new()),
@@ -719,14 +816,23 @@ async def _emit_event(
         await session.commit()
 
 
-async def _mark_failed(item_id: str, reason: str) -> None:
+async def _mark_failed(item_id: str, reason: str, lease: WorkerLease) -> None:
     async with session_scope() as session:
+        if not await lease_is_current(session, lease):
+            return
         item = (await session.execute(select(Item).where(Item.id == item_id))).scalar_one_or_none()
         if item is None:
             return
         prev_state = item.state
         item.state = "failed"
         item.failure_reason = reason
+        await sync_import_entries_for_item(
+            session,
+            item_id=item.id,
+            owner_id=item.user_id,
+            item_state="failed",
+            error_code="ingest_failed",
+        )
         session.add(
             IngestionEvent(
                 id=str(ulid.new()),
@@ -739,19 +845,28 @@ async def _mark_failed(item_id: str, reason: str) -> None:
         await session.commit()
 
 
-async def _mark_source_gone(item_id: str, reason: str) -> None:
+async def _mark_source_gone(item_id: str, reason: str, lease: WorkerLease) -> None:
     """Terminal non-retryable state for unresolvable sources (YouTube native).
 
     Unlike _mark_failed, callers return normally afterwards — Cloud Tasks
     must NOT retry a private/deleted video into existence.
     """
     async with session_scope() as session:
+        if not await lease_is_current(session, lease):
+            return
         item = (await session.execute(select(Item).where(Item.id == item_id))).scalar_one_or_none()
         if item is None:
             return
         prev_state = item.state
         item.state = "source_gone"
         item.failure_reason = reason
+        await sync_import_entries_for_item(
+            session,
+            item_id=item.id,
+            owner_id=item.user_id,
+            item_state="source_gone",
+            error_code="source_gone",
+        )
         session.add(
             IngestionEvent(
                 id=str(ulid.new()),
@@ -761,6 +876,10 @@ async def _mark_source_gone(item_id: str, reason: str) -> None:
                 detail={"reason": reason},
             )
         )
+        if not await finalize_worker_in_session(
+            session, lease, status="terminal", error_code="source_gone"
+        ):
+            raise PipelineError("worker lease lost before terminal source publication")
         await session.commit()
 
 
@@ -772,8 +891,11 @@ async def _mark_fully_indexed(
     owner_username: str | None,
     owner_url: str | None,
     caption: str | None,
+    lease: WorkerLease,
 ) -> None:
     async with session_scope() as session:
+        if not await lease_is_current(session, lease):
+            raise PipelineError("worker lease lost before completion")
         item = (await session.execute(select(Item).where(Item.id == item_id))).scalar_one()
         prev_state = item.state
         item.state = "fully_indexed"
@@ -788,6 +910,12 @@ async def _mark_fully_indexed(
         item.duration_seconds = float(summary.duration_seconds or 0.0)
         item.thumbnail_url = thumbnail_url
         item.updated_at = datetime.now(UTC)
+        await sync_import_entries_for_item(
+            session,
+            item_id=item.id,
+            owner_id=item.user_id,
+            item_state="fully_indexed",
+        )
         session.add(
             IngestionEvent(
                 id=str(ulid.new()),
@@ -797,4 +925,6 @@ async def _mark_fully_indexed(
                 detail={},
             )
         )
+        if not await finalize_worker_in_session(session, lease, status="completed"):
+            raise PipelineError("worker lease lost before completion")
         await session.commit()

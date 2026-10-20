@@ -12,11 +12,14 @@ export type PillButtonVariant = 'ink' | 'coral' | 'outline';
 interface PillButtonProps {
   label: string;
   onPress: () => void;
+  accessibilityLabel?: string;
+  accessibilityHint?: string;
   variant?: PillButtonVariant;
   shadowColor?: string;
   minHeight?: number;
   fontSize?: number;
   disabled?: boolean;
+  loading?: boolean;
   style?: StyleProp<ViewStyle>;
 }
 
@@ -25,7 +28,7 @@ const VARIANT_STYLES: Record<
   { background: string; textColor: string; borderColor: string; borderWidth: number }
 > = {
   ink: { background: color.ink, textColor: color.cream, borderColor: color.ink, borderWidth: border.bold },
-  coral: { background: color.coral, textColor: color.white, borderColor: color.ink, borderWidth: border.standard },
+  coral: { background: color.coral, textColor: color.ink, borderColor: color.ink, borderWidth: border.standard },
   outline: { background: color.cream, textColor: color.ink, borderColor: color.ink, borderWidth: border.hairline },
 };
 
@@ -39,11 +42,14 @@ const PRESS_DURATION = 90;
 export function PillButton({
   label,
   onPress,
+  accessibilityLabel,
+  accessibilityHint,
   variant = 'ink',
   shadowColor,
   minHeight = 54,
   fontSize: labelSize = fontSize.bodyLg,
   disabled = false,
+  loading = false,
   style,
 }: PillButtonProps) {
   const { background, textColor, borderColor, borderWidth } = VARIANT_STYLES[variant];
@@ -56,10 +62,15 @@ export function PillButton({
       { translateY: withTiming(pressed.value * PRESS_TRANSLATE, { duration: PRESS_DURATION }) },
     ],
   }));
+  const unavailable = disabled || loading;
 
   return (
     <Pressable
-      disabled={disabled}
+      accessibilityRole="button"
+      accessibilityLabel={accessibilityLabel ?? label}
+      accessibilityHint={accessibilityHint}
+      accessibilityState={{ disabled: unavailable, busy: loading }}
+      disabled={unavailable}
       onPressIn={() => {
         pressed.value = 1;
       }}
@@ -67,13 +78,13 @@ export function PillButton({
         pressed.value = 0;
       }}
       onPress={onPress}
-      style={[{ opacity: disabled ? 0.5 : 1 }, style]}
+      style={[{ opacity: unavailable ? 0.5 : 1 }, style]}
     >
       <Shadowed offset={4} shadowColor={resolvedShadowColor} radius={radius.pill}>
         <Animated.View
           style={[
             {
-              minHeight,
+              minHeight: Math.max(48, minHeight),
               borderRadius: radius.pill,
               borderWidth,
               borderColor,
@@ -87,7 +98,7 @@ export function PillButton({
         >
           <Text
             style={{
-              fontFamily: font.display,
+              fontFamily: font.body,
               fontSize: labelSize,
               letterSpacing: -0.3,
               textTransform: 'uppercase',

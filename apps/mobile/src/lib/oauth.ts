@@ -217,6 +217,7 @@ async function performWebOAuthSignIn(
         provider,
         options: {
           redirectTo: redirectUrl,
+          ...(provider === 'google' ? { queryParams: { prompt: 'select_account' } } : {}),
         },
       });
       // supabase-js performs window.location.assign(data.url) itself here —
@@ -251,6 +252,7 @@ async function performWebOAuthSignIn(
       options: {
         redirectTo: redirectUrl,
         skipBrowserRedirect: true,
+        ...(provider === 'google' ? { queryParams: { prompt: 'select_account' } } : {}),
       },
     });
 

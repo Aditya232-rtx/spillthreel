@@ -64,8 +64,9 @@ async def pg_pool() -> AsyncIterator[asyncpg.Pool]:
             asyncpg.create_pool(TEST_DATABASE_URL, min_size=1, max_size=2),
             timeout=10,
         )
-    except Exception:
-        pytest.skip(f"no test postgres at {TEST_DATABASE_URL}")
+    except Exception as exc:
+        # Connection exceptions and DSNs can contain database credentials.
+        pytest.skip(f"configured test PostgreSQL unavailable ({type(exc).__name__})")
 
     # Real schema via Alembic (idempotent `upgrade head`), so this tests
     # the actual item_embeddings table, FKs, and HNSW index — not a mock.

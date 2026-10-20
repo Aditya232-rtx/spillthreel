@@ -1,19 +1,20 @@
 import { Pressable, Text, View } from 'react-native';
 import { alpha, color, radius } from '@/theme/tokens';
 
-export type TabKey = 'home' | 'categories' | 'chat' | 'profile' | 'settings';
+export type TabKey = 'home' | 'library' | 'chat' | 'profile' | 'settings';
 
 interface TabDef {
   key: TabKey;
   icon: string;
+  label: string;
 }
 
 const TABS: TabDef[] = [
-  { key: 'home', icon: '⌂' },
-  { key: 'categories', icon: '◎' },
-  { key: 'chat', icon: '✦' },
-  { key: 'profile', icon: '☰' },
-  { key: 'settings', icon: '⚙' },
+  { key: 'home', icon: '⌂', label: 'Home' },
+  { key: 'library', icon: '▤', label: 'Library' },
+  { key: 'chat', icon: '✦', label: 'Ask' },
+  { key: 'profile', icon: '☰', label: 'Profile' },
+  { key: 'settings', icon: '⚙', label: 'Settings' },
 ];
 
 interface TabBarProps {
@@ -52,9 +53,12 @@ export function TabBar({ active, onChange }: TabBarProps) {
           <Pressable
             key={tab.key}
             onPress={() => onChange(tab.key)}
+            accessibilityRole="button"
+            accessibilityLabel={tab.label}
+            accessibilityState={{ selected: isActive }}
             style={{
-              width: 46,
-              height: 46,
+              width: 48,
+              height: 48,
               borderRadius: radius.pill,
               alignItems: 'center',
               justifyContent: 'center',

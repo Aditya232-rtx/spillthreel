@@ -1,7 +1,7 @@
 /**
- * Design tokens for SpillTheReel — "kitsch-minimal" visual system.
- * Source of truth: /docs (root) design_handoff_spillthereel/README.md + SpillTheReel.dc.html
- * Do not hand-roll hex values or spacing anywhere else in the app — import from here.
+ * Design tokens for SpillTheReel's warm native library.
+ * Keep primitive colors here and use semantic roles in components so text and
+ * controls stay readable when surfaces or states change.
  */
 
 export const color = {
@@ -17,6 +17,31 @@ export const color = {
   chatCard: '#1B1D15',
 } as const;
 
+/** Semantic roles for the light library and the dark Ask surface. */
+export const semantic = {
+  canvas: color.cream,
+  surface: color.white,
+  surfaceRaised: color.warmCream,
+  textPrimary: color.ink,
+  textSecondary: '#55574F',
+  textDisabled: '#74766F',
+  border: '#777970',
+  action: color.coral,
+  onAction: color.ink,
+  selected: '#F6D7CF',
+  success: '#315B3A',
+  warning: '#8A5700',
+  danger: '#A12D22',
+  focus: '#5B51C8',
+  askCanvas: color.chatBg,
+  askSurface: color.chatCard,
+  askTextPrimary: color.cream,
+  askTextSecondary: '#C2C2B8',
+  askBorder: '#54564D',
+  askAction: color.coral,
+  askOnAction: color.ink,
+} as const;
+
 export const alpha = (hex: string, a: number): string => {
   const bigint = parseInt(hex.replace('#', ''), 16);
   const r = (bigint >> 16) & 255;
@@ -29,7 +54,9 @@ export const font = {
   display: 'Oswald_700Bold',
   displaySemibold: 'Oswald_600SemiBold',
   displayMedium: 'Oswald_500Medium',
-  body: 'Oswald_500Medium',
+  // Leave the family unset so iOS and Android use their native readable sans
+  // (San Francisco and Roboto respectively) and respect platform font scaling.
+  body: undefined,
   script: 'MyLove',
 } as const;
 

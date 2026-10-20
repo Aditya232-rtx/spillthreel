@@ -1,0 +1,16 @@
+{
+  "review_date": "2026-10-16",
+  "impeccable": {
+    "repository": "https://github.com/pbakaus/impeccable",
+    "commit": "6af45ac9a5eb8792f033d3242f52e99812fd91fa",
+    "path": "plugin/skills/impeccable",
+    "skill_version": "4.6.0",
+    "engine_version": "0.1.15"
+  },
+  "subagents": {
+    "repository": "https://github.com/VoltAgent/awesome-claude-code-subagents",
+    "commit": "408d3c9eee2d0c75c12a3abb5de29e53c2ca6b9e",
+    "opencode_converter": "scripts/install-subagents.sh",
+    "codex_converter": "scripts/convert-codex-agents.py"
+  }
+}

@@ -7,10 +7,12 @@
  *   * `Session`      — signed in, has JWT for API calls
  *   * `loading` true — we're still hydrating from SecureStore
  */
-import { useEffect, useState } from 'react';
+import { useSyncExternalStore } from 'react';
 import { Platform } from 'react-native';
 import type { AuthError, Session, User } from '@supabase/supabase-js';
 import { supabase } from '@/lib/supabase';
+import { runWithPushRevoked, signOutCurrentSession } from '@/lib/auth-session';
+import { restoreNativePush } from '@/lib/native-push';
 import { identifyUser, resetAnalytics } from '@/lib/analytics';
 import { getRememberedAvatarChoice } from '@/lib/avatar';
 import { getCustomName, getRememberedDisplayName } from '@/lib/display-name';
@@ -24,7 +26,7 @@ interface UseAuthResult {
   session: Session | null;
   user: User | null;
   loading: boolean;
-  signInWithPassword: (email: string, password: string) => Promise<{ error: AuthError | null }>;
+  signInWithPassword: (email: string, password: string) => Promise<{ error: AuthError | null; session: Session | null }>;
   signUpWithPassword: (
     email: string,
     password: string,
@@ -37,106 +39,165 @@ interface UseAuthResult {
   signOut: () => Promise<void>;
 }
 
-export function useAuth(): UseAuthResult {
-  const [session, setSession] = useState<Session | null>(null);
-  const [loading, setLoading] = useState(true);
+interface AuthSnapshot {
+  session: Session | null;
+  loading: boolean;
+}
 
-  useEffect(() => {
-    // Hydrate the initial session from SecureStore. Supabase JS does
-    // this synchronously from its internal cache after the first
-    // getSession() call succeeds.
-    supabase.auth.getSession().then(({ data }) => {
-      setSession(data.session);
+let authSnapshot: AuthSnapshot = { session: null, loading: true };
+let authEventRevision = 0;
+const authListeners = new Set<() => void>();
+
+function publishAuthSnapshot(session: Session | null, loading: boolean): void {
+  if (authSnapshot.session === session && authSnapshot.loading === loading) return;
+  authSnapshot = { session, loading };
+  authListeners.forEach((listener) => listener());
+}
+
+function subscribeToAuthStore(listener: () => void): () => void {
+  authListeners.add(listener);
+  return () => {
+    authListeners.delete(listener);
+  };
+}
+
+function getAuthSnapshot(): AuthSnapshot {
+  return authSnapshot;
+}
+
+function transitionBlockedError(): AuthError {
+  return {
+    name: 'PushRevocationFailed',
+    message: 'Could not safely turn off notifications for the signed-in account. Try again before switching accounts.',
+    status: 503,
+  } as AuthError;
+}
+
+// Install one source subscription for the lifetime of this module. Every hook
+// consumer reads the same external-store snapshot, including during StrictMode
+// remounts, instead of creating another Supabase subscription per component.
+supabase.auth.onAuthStateChange((event, next) => {
+  authEventRevision += 1;
+  publishAuthSnapshot(next, false);
+
+  // Analytics identity: Supabase user id only, never email/metadata.
+  if (event === 'SIGNED_OUT' || !next) {
+    resetAnalytics();
+  } else if (event === 'SIGNED_IN' && next.user) {
+    identifyUser(next.user.id);
+  }
+
+  // OAuth providers overwrite user_metadata with the provider profile on each
+  // sign-in. Keep profile persistence outside the auth callback because Supabase
+  // auth methods share an internal lock. Session checks prevent stale work from
+  // updating a different account after an account switch.
+  if (event === 'SIGNED_IN' && next?.user?.email) {
+    const eventSession = next;
+    const email = next.user.email;
+    void Promise.resolve().then(async () => {
+      const [rememberedName, rememberedAvatar] = await Promise.all([
+        getRememberedDisplayName(email),
+        getRememberedAvatarChoice(email),
+      ]);
+      if (
+        authSnapshot.session?.user.id !== eventSession.user.id ||
+        authSnapshot.session.access_token !== eventSession.access_token
+      ) return;
+
+      const { data } = await supabase.auth.getSession();
+      if (
+        authSnapshot.session?.user.id !== eventSession.user.id ||
+        authSnapshot.session.access_token !== eventSession.access_token ||
+        data.session?.user.id !== eventSession.user.id ||
+        data.session.access_token !== eventSession.access_token
+      ) return;
+
+      const meta = eventSession.user.user_metadata ?? {};
+      const wantedName = getCustomName(eventSession.user) ?? rememberedName;
+      const patch: Record<string, string> = {};
+      if (wantedName && wantedName !== meta.full_name) {
+        patch.full_name = wantedName;
+        patch.custom_name = wantedName;
+      }
+      if (rememberedAvatar && rememberedAvatar !== meta.avatar) {
+        patch.avatar = rememberedAvatar;
+      }
+      if (Object.keys(patch).length > 0) {
+        await supabase.auth.updateUser({ data: patch });
+      }
     }).catch(() => {
-      // Hydration failed (corrupt SecureStore, etc.) — stay signed out
-      // rather than hanging on the splash gate forever.
-    }).finally(() => {
-      setLoading(false);
+      // Profile reconciliation is best-effort and never blocks auth state.
     });
+  }
+});
 
-    // Subscribe to token refreshes, sign-in, sign-out — the callback
-    // fires whether the change originated from this hook or any other
-    // path (e.g. the OAuth deep-link handler).
-    const { data: sub } = supabase.auth.onAuthStateChange(async (event, next) => {
-      setSession(next);
-      setLoading(false);
-      // Analytics identity: Supabase user id only, never email/metadata.
-      // Reset on sign-out so the next user starts clean.
-      if (event === 'SIGNED_OUT' || !next) {
-        resetAnalytics();
-      } else if (event === 'SIGNED_IN' && next.user) {
-        identifyUser(next.user.id);
-      }
-      // OAuth providers overwrite user_metadata with the provider profile
-      // on every sign-in. If the user explicitly chose a different name or
-      // avatar before, re-apply it so the provider never silently resets
-      // them. (USER_UPDATED from our own write below doesn't re-trigger
-      // this.) Server-side custom_name wins over the device override so a
-      // reinstall can't resurrect a stale local choice.
-      if (event === 'SIGNED_IN' && next?.user?.email) {
-        const email = next.user.email;
-        const meta = next.user.user_metadata ?? {};
-        const [rememberedName, rememberedAvatar] = await Promise.all([
-          getRememberedDisplayName(email),
-          getRememberedAvatarChoice(email),
-        ]);
-        const wantedName = getCustomName(next.user) ?? rememberedName;
-        const patch: Record<string, string> = {};
-        if (wantedName && wantedName !== meta.full_name) {
-          patch.full_name = wantedName;
-          patch.custom_name = wantedName;
-        }
-        if (rememberedAvatar && rememberedAvatar !== meta.avatar) {
-          patch.avatar = rememberedAvatar;
-        }
-        if (Object.keys(patch).length > 0) {
-          await supabase.auth.updateUser({ data: patch });
-        }
-      }
-    });
+// Subscribe before hydrating so an auth event cannot be missed between the
+// initial read and the subscription. Ignore stale hydration after any event.
+void supabase.auth.getSession().then(({ data }) => {
+  if (authEventRevision === 0) publishAuthSnapshot(data.session, false);
+}).catch(() => {
+  // Hydration failed (corrupt SecureStore, etc.) — remain signed out.
+}).finally(() => {
+  if (authSnapshot.loading) publishAuthSnapshot(authSnapshot.session, false);
+});
 
-    return () => {
-      sub.subscription.unsubscribe();
-    };
-  }, []);
+export function useAuth(): UseAuthResult {
+  const { session, loading } = useSyncExternalStore(
+    subscribeToAuthStore,
+    getAuthSnapshot,
+    getAuthSnapshot,
+  );
 
   return {
     session,
     user: session?.user ?? null,
     loading,
     signInWithPassword: async (email, password) => {
-      const { error } = await supabase.auth.signInWithPassword({ email, password });
-      return { error };
+      try {
+        const result = await runWithPushRevoked(
+          () => supabase.auth.signInWithPassword({ email, password }),
+          restoreNativePush,
+        );
+        return { error: result.value.error, session: result.value.data.session };
+      } catch {
+        return { error: transitionBlockedError(), session: null };
+      }
     },
     signUpWithPassword: async (email, password, displayName) => {
-      // emailRedirectTo brings the confirmation-link tap back into the
-      // app (deep link on native, origin on web) instead of stranding
-      // the user on Supabase's Site URL. Our auth/callback screen
-      // exchanges the code and routes via the stored oauth-next flag.
-      const emailRedirectTo =
-        Platform.OS === 'web' && typeof window !== 'undefined'
-          ? `${window.location.origin}`
-          : buildOAuthRedirectUrl();
-      // custom_name mirrors the choice server-side: providers overwrite
-      // full_name but never this key, so the choice survives reinstalls.
-      const nameData = displayName
-        ? { full_name: displayName, custom_name: displayName }
-        : undefined;
-      const { data, error } = await supabase.auth.signUp({
-        email,
-        password,
-        options: {
-          ...(nameData ? { data: nameData } : undefined),
-          emailRedirectTo,
-        },
-      });
-      return { error, session: data.session, user: data.user };
+      try {
+        const emailRedirectTo =
+          Platform.OS === 'web' && typeof window !== 'undefined'
+            ? `${window.location.origin}`
+            : buildOAuthRedirectUrl();
+        const nameData = displayName
+          ? { full_name: displayName, custom_name: displayName }
+          : undefined;
+        const result = await runWithPushRevoked(() => supabase.auth.signUp({
+          email,
+          password,
+          options: {
+            ...(nameData ? { data: nameData } : undefined),
+            emailRedirectTo,
+          },
+        }), restoreNativePush);
+        return { error: result.value.error, session: result.value.data.session, user: result.value.data.user };
+      } catch {
+        return { error: transitionBlockedError(), session: null, user: null };
+      }
     },
     signInWithOAuth: async (provider, next = 'login') => {
-      return performOAuthSignIn(provider, next);
+      try {
+        const result = await runWithPushRevoked(
+          () => performOAuthSignIn(provider, next),
+          restoreNativePush,
+        );
+        return result.value;
+      } catch {
+        return { error: transitionBlockedError() };
+      }
     },
     signOut: async () => {
-      await supabase.auth.signOut();
+      await signOutCurrentSession(restoreNativePush);
     },
   };
 }

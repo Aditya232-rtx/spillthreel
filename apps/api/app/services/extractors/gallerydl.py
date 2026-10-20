@@ -43,6 +43,7 @@ from app.services.extractors.base import (
     Owner,
     Platform,
 )
+from app.services.ingest.platform_detect import UnsupportedPlatformError, detect_platform
 
 _logger = get_logger(__name__)
 
@@ -62,24 +63,22 @@ _IMAGE_SUFFIXES = frozenset({".jpg", ".jpeg", ".png", ".webp"})
 # can refuse to mislabel video as image (video belongs to yt-dlp).
 _VIDEO_SUFFIXES = frozenset({".mp4", ".webm", ".mkv", ".mov", ".m4a", ".mp3", ".wav"})
 
-# Enough stderr to debug (HTTP status, extractor name) without flooding logs.
-_STDERR_TAIL_CHARS = 500
 
+def _extractor_proxy() -> str | None:
+    """Controlled extractor egress proxy URL when configured, else None.
 
-def _outbound_proxy() -> str | None:
-    """Egress proxy URL when configured, else None.
-
-    Env ``OUTBOUND_PROXY_URL`` first, then settings ``outbound_proxy_url``
-    (same precedence as the Part D scraper providers). Never logged — the
-    URL may embed `user:pass@` credentials.
+    Env ``EXTRACTOR_EGRESS_PROXY_URL`` first, then settings
+    ``extractor_egress_proxy_url``. This is distinct from
+    ``OUTBOUND_PROXY_URL`` for paid provider API calls. Never logged —
+    the URL may embed `user:pass@` credentials.
     """
-    raw = os.environ.get("OUTBOUND_PROXY_URL", "").strip()
+    raw = os.environ.get("EXTRACTOR_EGRESS_PROXY_URL", "").strip()
     if raw:
         return raw
     try:
         from app.settings import get_settings
 
-        value = getattr(get_settings(), "outbound_proxy_url", None)
+        value = getattr(get_settings(), "extractor_egress_proxy_url", None)
         if isinstance(value, str) and value.strip():
             return value.strip()
     except Exception:
@@ -87,15 +86,65 @@ def _outbound_proxy() -> str | None:
     return None
 
 
-def _proxy_args() -> list[str]:
-    """CLI fragment for proxying, or [] when direct egress.
+def _validate_proxy(proxy: str) -> str:
+    """Reject malformed proxy values instead of risking a downloader fallback.
 
-    gallery-dl documents `--proxy URL` under Networking Options. Callers
-    splice this immediately before the URL so flag-position-sensitive
-    assertions (and gallery-dl's own parsing) keep working.
+    This is only an application-side guard. The configured proxy must enforce
+    destination policy, and the worker network must deny direct egress.
     """
-    proxy = _outbound_proxy()
-    return ["--proxy", proxy] if proxy else []
+    try:
+        parsed = urlsplit(proxy)
+        port = parsed.port
+    except ValueError:
+        raise ExtractorError("gallery-dl extractor proxy configuration is invalid") from None
+    if (
+        parsed.scheme not in {"http", "https"}
+        or not parsed.hostname
+        or parsed.path not in {"", "/"}
+        or parsed.query
+        or parsed.fragment
+        or any(ch.isspace() for ch in proxy)
+        or (port is not None and not 1 <= port <= 65535)
+    ):
+        raise ExtractorError("gallery-dl extractor proxy configuration is invalid")
+    return proxy
+
+
+def _write_proxy_config(proxy: str) -> Path:
+    """Write a short-lived mode-0600 gallery-dl config to keep secrets out of argv."""
+    fd, raw_path = tempfile.mkstemp(prefix="spillthereel-gallerydl-proxy-", suffix=".json")
+    path = Path(raw_path)
+    try:
+        os.chmod(path, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as config_file:
+            json.dump(
+                {"extractor": {"proxy": proxy}, "downloader": {"proxy": proxy}},
+                config_file,
+            )
+    except BaseException:
+        path.unlink(missing_ok=True)
+        raise
+    return path
+
+
+def _gallerydl_subprocess_env() -> dict[str, str]:
+    """Give the downloader only runtime necessities, not API/service secrets."""
+    allowed = {
+        "PATH",
+        "HOME",
+        "TMPDIR",
+        "TMP",
+        "TEMP",
+        "LANG",
+        "LC_ALL",
+        "SYSTEMROOT",
+        "SSL_CERT_FILE",
+        "SSL_CERT_DIR",
+        "REQUESTS_CA_BUNDLE",
+    }
+    env = {name: value for name, value in os.environ.items() if name in allowed}
+    env.setdefault("PATH", os.defpath)
+    return env
 
 
 class GalleryDlExtractor:
@@ -109,40 +158,66 @@ class GalleryDlExtractor:
         # TRD §12.3) and tries us last, so video never reaches us while
         # yt-dlp is healthy. Trust the dispatch like the other
         # extractors do — no URL-path sniffing (see module docstring).
-        return self.platform in ("instagram", "x")
+        if self.platform not in ("instagram", "x"):
+            return False
+        try:
+            return detect_platform(url) == self.platform
+        except (UnsupportedPlatformError, ValueError):
+            return False
 
     async def extract(self, url: str) -> ExtractResult:
+        if not await self.can_handle(url):
+            raise ExtractorError("gallery-dl URL does not match the configured platform")
         redacted = _redact_url(url)
-
-        metadata_out, _ = await _run_gallery_dl(
-            ["--dump-json", "--range", f"1-{_MAX_IMAGES}", *_proxy_args(), url],
-            timeout=_TIMEOUT_SECONDS,
-            redacted_url=redacted,
-        )
-        caption, owner = _parse_metadata(metadata_out)
-
-        # Pipeline owns deletion of returned paths (TRD §15.7); on any failure below we clean up
-        # the tmpdir ourselves so failed items leak nothing.
-        tmp_dir = Path(tempfile.mkdtemp(prefix="spillthereel-gallerydl-"))
+        configured_proxy = _extractor_proxy()
+        if not configured_proxy:
+            # gallery-dl fetches metadata and media itself; neither phase
+            # uses the pinned-DNS media downloader.
+            raise ExtractorError("gallery-dl extraction requires EXTRACTOR_EGRESS_PROXY_URL")
+        proxy = _validate_proxy(configured_proxy)
+        proxy_config = _write_proxy_config(proxy)
         try:
-            _, dl_stderr = await _run_gallery_dl(
+            metadata_out, _ = await _run_gallery_dl(
                 [
-                    "--destination",
-                    str(tmp_dir),
+                    "--dump-json",
                     "--range",
                     f"1-{_MAX_IMAGES}",
-                    *_proxy_args(),
+                    "--config-ignore",
+                    "--config-json",
+                    str(proxy_config),
                     url,
                 ],
                 timeout=_TIMEOUT_SECONDS,
                 redacted_url=redacted,
             )
-            image_paths = _collect_images(tmp_dir)
-            if not image_paths:
-                _raise_no_images(tmp_dir, dl_stderr, redacted)
-        except BaseException:
-            shutil.rmtree(tmp_dir, ignore_errors=True)
-            raise
+            caption, owner = _parse_metadata(metadata_out)
+
+            # Pipeline owns deletion of returned paths (TRD §15.7); on any
+            # failure below we clean up the tmpdir ourselves.
+            tmp_dir = Path(tempfile.mkdtemp(prefix="spillthereel-gallerydl-"))
+            try:
+                _, _ = await _run_gallery_dl(
+                    [
+                        "--destination",
+                        str(tmp_dir),
+                        "--range",
+                        f"1-{_MAX_IMAGES}",
+                        "--config-ignore",
+                        "--config-json",
+                        str(proxy_config),
+                        url,
+                    ],
+                    timeout=_TIMEOUT_SECONDS,
+                    redacted_url=redacted,
+                )
+                image_paths = _collect_images(tmp_dir)
+                if not image_paths:
+                    _raise_no_images(tmp_dir, redacted)
+            except BaseException:
+                shutil.rmtree(tmp_dir, ignore_errors=True)
+                raise
+        finally:
+            proxy_config.unlink(missing_ok=True)
 
         _logger.info(
             "extractor.gallerydl.extracted",
@@ -178,9 +253,10 @@ async def _run_gallery_dl(
             *args,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
+            env=_gallerydl_subprocess_env(),
         )
-    except OSError as e:
-        raise ExtractorError(f"could not spawn gallery-dl for {redacted_url}: {e}") from e
+    except OSError:
+        raise ExtractorError("could not spawn gallery-dl") from None
 
     try:
         stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
@@ -190,8 +266,8 @@ async def _run_gallery_dl(
         raise ExtractorError(f"gallery-dl timed out after {timeout:g}s for {redacted_url}") from e
 
     if proc.returncode != 0:
-        tail = stderr.decode("utf-8", "replace")[-_STDERR_TAIL_CHARS:]
-        raise ExtractorError(f"gallery-dl exit {proc.returncode} for {redacted_url}: {tail}")
+        # stderr may contain a signed source URL or authorization token.
+        raise ExtractorError(f"gallery-dl exited with status {proc.returncode}")
     return stdout, stderr
 
 
@@ -269,21 +345,30 @@ def _collect_images(tmp_dir: Path) -> list[Path]:
     return found[:_MAX_IMAGES]
 
 
-def _raise_no_images(tmp_dir: Path, stderr: bytes, redacted_url: str) -> NoReturn:
+def _raise_no_images(tmp_dir: Path, redacted_url: str) -> NoReturn:
     videos = [p for p in tmp_dir.rglob("*") if p.is_file() and p.suffix.lower() in _VIDEO_SUFFIXES]
     if videos:
         raise ExtractorError(
             f"gallery-dl returned video-only content for {redacted_url} "
             f"({len(videos)} video file(s)); leaving video to yt-dlp"
         )
-    tail = stderr.decode("utf-8", "replace")[-_STDERR_TAIL_CHARS:]
-    raise ExtractorError(f"gallery-dl downloaded no images for {redacted_url}: {tail}")
+    # Do not surface stderr: gallery-dl may echo signed source URLs or
+    # authorization data in its diagnostics.
+    raise ExtractorError(f"gallery-dl downloaded no images for {redacted_url}")
 
 
 def _redact_url(url: str) -> str:
-    """Strip query + fragment for log/error lines — tokens live there."""
+    """Strip query, fragment, and URL userinfo before logging."""
     try:
         parts = urlsplit(url)
+        hostname = parts.hostname
+        port = parts.port
     except ValueError:
         return "<unparseable-url>"
-    return urlunsplit((parts.scheme, parts.netloc, parts.path, "", ""))
+    if not hostname:
+        return "<unparseable-url>"
+    # Rebuild netloc from hostname/port; retaining parts.netloc would expose
+    # `username:password@` if a source URL unexpectedly contains userinfo.
+    host = f"[{hostname}]" if ":" in hostname else hostname
+    netloc = f"{host}:{port}" if port is not None else host
+    return urlunsplit((parts.scheme, netloc, parts.path, "", ""))

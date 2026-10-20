@@ -31,11 +31,10 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     APP_MODULE=app.main:app \
     PORT=8000
 
-# ffmpeg/ffprobe: dev api runs the ingest pipeline in-process via the
-# local dispatcher (enqueue shortcut when WORKER_BASE_URL is unset —
-# compose api has none), which shells out via services/media/ffmpeg.py.
-# Staging/prod api never touches it (worker service does), but the dev
-# loop needs it. System layer before app layers for cache-friendliness.
+# ffmpeg/ffprobe: the local outbox dispatcher runs ingestion handlers in
+# process and shells out via services/media/ffmpeg.py. Staging/prod API
+# never touches it (the worker service does), but the development runner
+# and worker need it. System layer before app layers for cache-friendliness.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ffmpeg \
     && rm -rf /var/lib/apt/lists/*

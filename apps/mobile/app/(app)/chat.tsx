@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import {
   Image,
+  KeyboardAvoidingView,
   Linking,
   Platform,
   Pressable,
@@ -10,6 +11,7 @@ import {
   View,
 } from 'react-native';
 import { useRouter } from 'expo-router';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import Animated, {
   FadeIn,
@@ -21,6 +23,7 @@ import Animated, {
 import { Svg, Line, Path, Polyline, Rect } from 'react-native-svg';
 import { SUGGESTION_CHIPS, type ChatErrorKind, type ChatMessage } from '@/data/chat';
 import { ApiError, search, type SearchCard, type SearchCitation } from '@/lib/api';
+import { useAuth } from '@/hooks/useAuth';
 import { alpha, color, font, radius, space } from '@/theme/tokens';
 
 interface Conversation {
@@ -31,7 +34,6 @@ interface Conversation {
 }
 
 const HISTORY_KEY = 'spillthereel.chat_history.v2';
-const LEGACY_HISTORY_KEY = 'spillthereel.chat_history.v1';
 const MAX_STORED_MESSAGES = 50;
 /** Backend contract: query is 1..500 chars — clamp client-side, never 400. */
 const MAX_QUERY_LENGTH = 500;
@@ -126,8 +128,9 @@ function migrateConversations(raw: unknown): Conversation[] | null {
 function errorKind(err: unknown): ChatErrorKind {
   if (err instanceof ApiError) {
     if (err.status === 401) return 'auth';
-    if (err.status === 503 || err.status === 504) return 'retryable';
+    if (err.status === 503 || err.status === 504 || err.code === 'request_timeout') return 'retryable';
   }
+  if (err instanceof TypeError) return 'retryable';
   // Default-timeout aborts surface as DOMException 'TimeoutError' (or a
   // generic Error with the same name on runtimes without DOMException).
   // Timeouts are transient — offer Retry, same as 503/504.
@@ -139,10 +142,9 @@ function errorKind(err: unknown): ChatErrorKind {
 function errorText(err: unknown): string {
   switch (errorKind(err)) {
     case 'auth':
-      // api.ts already signed out locally; AuthGate routes to welcome.
-      return 'Your session expired — please sign in again to keep searching.';
+      return 'Your session was rejected — sign out in Settings, then sign in again to keep searching.';
     case 'retryable':
-      return 'Search is busy right now — try again in a moment.';
+      return 'Could not reach search right now — check your connection and try again.';
     default:
       return 'Something went wrong with search — try again.';
   }
@@ -181,7 +183,7 @@ function AssistantText({
 }) {
   const parts = text.split(/(\[\d+\])/g);
   return (
-    <Text style={{ fontFamily: font.body, fontSize: 14.5, lineHeight: 21, color: color.cream }}>
+    <Text style={{ fontFamily: font.body, fontSize: 16, lineHeight: 24, color: color.cream }}>
       {parts.map((part, i) => {
         const marker = /^\[(\d+)\]$/.exec(part);
         if (!marker) {
@@ -191,6 +193,8 @@ function AssistantText({
           <Text
             key={i}
             onPress={() => onCite(Number(marker[1]))}
+            accessibilityRole="link"
+            accessibilityLabel={`Source ${marker[1]}`}
             style={{ textDecorationLine: 'underline', color: color.coral }}
           >
             {part}
@@ -206,15 +210,19 @@ function ResultCard({
   card,
   flashed,
   onOpen,
+  onRef,
 }: {
   card: SearchCard;
   flashed: boolean;
   onOpen: () => void;
+  onRef: (node: View | null) => void;
 }) {
   const [imgFailed, setImgFailed] = useState(false);
   const platform = card.platform ? card.platform.toUpperCase() : 'APP';
   return (
     <View
+      ref={onRef}
+      collapsable={false}
       style={{
         backgroundColor: color.chatCard,
         borderWidth: flashed ? 2.5 : 1.5,
@@ -239,7 +247,7 @@ function ResultCard({
           {card.title}
         </Text>
         {card.creator ? (
-          <Text style={{ fontFamily: font.body, fontSize: 11.5, lineHeight: 16, color: alpha(color.cream, 0.55) }} numberOfLines={2}>
+          <Text style={{ fontFamily: font.body, fontSize: 13, lineHeight: 18, color: alpha(color.cream, 0.75) }} numberOfLines={2}>
             {card.creator}
           </Text>
         ) : null}
@@ -254,7 +262,8 @@ function ResultCard({
             gap: 6,
             backgroundColor: color.cream,
             borderRadius: radius.pill,
-            paddingVertical: 9,
+            minHeight: 48,
+            paddingVertical: 10,
             marginTop: 4,
           }}
         >
@@ -267,8 +276,11 @@ function ResultCard({
 
 export default function ChatScreen() {
   const router = useRouter();
+  const insets = useSafeAreaInsets();
+  const { user } = useAuth();
   const [conversations, setConversations] = useState<Conversation[]>([freshConversation()]);
   const [activeId, setActiveId] = useState<string | null>(null);
+  const [historyOwnerId, setHistoryOwnerId] = useState<string | null>(null);
   const [input, setInput] = useState('');
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [thinkingFor, setThinkingFor] = useState<string | null>(null);
@@ -277,6 +289,11 @@ export default function ChatScreen() {
   const [voiceHint, setVoiceHint] = useState(false);
 
   const scrollRef = useRef<ScrollView>(null);
+  const viewportRef = useRef<View>(null);
+  const cardRefs = useRef(new Map<string, View>());
+  const scrollOffsetRef = useRef(0);
+  const activeUserIdRef = useRef(user?.id ?? null);
+  activeUserIdRef.current = user?.id ?? null;
   const searchAbortRef = useRef<AbortController | null>(null);
   const chipGuardRef = useRef(0);
   const flashTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -287,36 +304,48 @@ export default function ChatScreen() {
   const transcriptRef = useRef('');
   const hintTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  const active = conversations.find((c) => c.id === activeId) ?? conversations[0];
+  const historyReady = Boolean(user?.id && historyOwnerId === user.id);
+  const visibleConversations = historyReady ? conversations : [];
+  const active = visibleConversations.find((c) => c.id === activeId) ?? visibleConversations[0];
   const messages = active?.messages ?? [];
   const hasText = input.trim().length > 0;
 
-  // Load persisted history once; ensure one active conversation.
-  // v2 key wins; absent v2, migrate v1 (drop card fields, keep text).
+  // Keep local chat history isolated by account. Legacy global history is not
+  // migrated because its owner cannot be established safely.
   useEffect(() => {
-    AsyncStorage.getItem(HISTORY_KEY)
-      .then((raw) => {
-        if (raw) {
-          const convs = migrateConversations(JSON.parse(raw));
-          if (convs) {
-            setConversations(convs);
-            setActiveId(convs[0].id);
-            return;
+    let cancelled = false;
+    const ownerId = user?.id ?? null;
+    setHistoryOwnerId(null);
+    setConversations([freshConversation()]);
+    setActiveId(null);
+    setInput('');
+    setThinkingFor(null);
+    setListening(false);
+    searchAbortRef.current?.abort();
+    searchAbortRef.current = null;
+
+    const historyKey = ownerId ? `${HISTORY_KEY}.${ownerId}` : null;
+    if (historyKey) {
+      void AsyncStorage.getItem(historyKey)
+        .then((raw) => {
+          if (cancelled) return;
+          if (raw) {
+            const convs = migrateConversations(JSON.parse(raw));
+            if (convs) {
+              setConversations(convs);
+              setActiveId(convs[0].id);
+            }
           }
-        }
-        return AsyncStorage.getItem(LEGACY_HISTORY_KEY).then((legacyRaw) => {
-          if (!legacyRaw) return;
-          const convs = migrateConversations(JSON.parse(legacyRaw));
-          if (convs) {
-            setConversations(convs);
-            setActiveId(convs[0].id);
-          }
+          if (!cancelled) setHistoryOwnerId(ownerId);
+        })
+        .catch(() => {
+          // Corrupted/unavailable history starts fresh for this account.
+          if (!cancelled) setHistoryOwnerId(ownerId);
         });
-      })
-      .catch(() => {
-        // corrupted history — start fresh
-      });
+    }
+
     return () => {
+      cancelled = true;
       searchAbortRef.current?.abort();
       searchAbortRef.current = null;
       if (flashTimerRef.current) clearTimeout(flashTimerRef.current);
@@ -330,18 +359,20 @@ export default function ChatScreen() {
         }
       }
     };
-  }, []);
+  }, [user?.id]);
 
   // Persist history (bounded per conversation).
   useEffect(() => {
+    const ownerId = user?.id;
+    if (!ownerId || historyOwnerId !== ownerId) return;
     const trimmed = conversations.map((c) => ({
       ...c,
       messages: c.messages.slice(-MAX_STORED_MESSAGES),
     }));
-    AsyncStorage.setItem(HISTORY_KEY, JSON.stringify(trimmed)).catch(() => {
+    AsyncStorage.setItem(`${HISTORY_KEY}.${ownerId}`, JSON.stringify(trimmed)).catch(() => {
       // storage full or unavailable — chat still works in memory
     });
-  }, [conversations]);
+  }, [conversations, historyOwnerId, user?.id]);
 
   function appendMessage(convId: string, msg: ChatMessage, title?: string): void {
     setConversations((prev) =>
@@ -360,7 +391,8 @@ export default function ChatScreen() {
 
   async function sendMessage(raw?: string): Promise<void> {
     const trimmed = (raw ?? input).trim();
-    if (!trimmed || thinkingFor || !active) return;
+    const ownerId = user?.id;
+    if (!trimmed || thinkingFor || !active || !ownerId || !historyReady) return;
     const convId = active.id;
     const isFirst = active.messages.length === 0;
     const query = trimmed.slice(0, MAX_QUERY_LENGTH);
@@ -378,7 +410,7 @@ export default function ChatScreen() {
     searchAbortRef.current = controller;
     try {
       const res = await search(query, undefined, { signal: controller.signal });
-      if (controller.signal.aborted) return;
+      if (controller.signal.aborted || activeUserIdRef.current !== ownerId) return;
       // Backend text verbatim when provided; honest fallback when empty —
       // the suggestion chips below cover the no-match recovery path.
       const text =
@@ -394,7 +426,7 @@ export default function ChatScreen() {
       });
     } catch (err) {
       // Client-side cancel from new chat / conversation switch — no bubble.
-      if (controller.signal.aborted) return;
+      if (controller.signal.aborted || activeUserIdRef.current !== ownerId) return;
       appendMessage(convId, {
         id: newId('msg'),
         isUser: false,
@@ -404,7 +436,48 @@ export default function ChatScreen() {
       });
     } finally {
       if (searchAbortRef.current === controller) searchAbortRef.current = null;
-      setThinkingFor((current) => (current === convId ? null : current));
+      if (activeUserIdRef.current === ownerId) {
+        setThinkingFor((current) => (current === convId ? null : current));
+      }
+    }
+  }
+
+  // Retry the failed assistant turn in place. The user's original query is
+  // already in history, so retrying must not append a duplicate user bubble.
+  async function retrySearch(convId: string, messageId: string, query: string): Promise<void> {
+    const ownerId = user?.id;
+    if (!ownerId || !historyReady || !query || thinkingFor) return;
+    searchAbortRef.current?.abort();
+    const controller = new AbortController();
+    searchAbortRef.current = controller;
+    setThinkingFor(convId);
+    const replaceFailedTurn = (message: ChatMessage) => {
+      setConversations((previous) => previous.map((conversation) =>
+        conversation.id === convId
+          ? {
+              ...conversation,
+              updatedAt: Date.now(),
+              messages: conversation.messages.map((entry) => entry.id === messageId ? message : entry),
+            }
+          : conversation,
+      ));
+    };
+    try {
+      const res = await search(query, undefined, { signal: controller.signal });
+      if (controller.signal.aborted || activeUserIdRef.current !== ownerId) return;
+      replaceFailedTurn({
+        id: messageId,
+        isUser: false,
+        text: res.text?.trim() || 'No matches in your saves — try different words, or tap a suggestion below.',
+        cards: res.cards ?? [],
+        citations: res.citations ?? [],
+      });
+    } catch (err) {
+      if (controller.signal.aborted || activeUserIdRef.current !== ownerId) return;
+      replaceFailedTurn({ id: messageId, isUser: false, text: errorText(err), error: errorKind(err), retryQuery: query });
+    } finally {
+      if (searchAbortRef.current === controller) searchAbortRef.current = null;
+      if (activeUserIdRef.current === ownerId) setThinkingFor((current) => current === convId ? null : current);
     }
   }
 
@@ -419,10 +492,22 @@ export default function ChatScreen() {
   function flashCitation(msg: ChatMessage, n: number): void {
     const itemId = msg.citations?.find((c) => c.index === n)?.item_id;
     if (!itemId || !msg.cards?.some((c) => c.item_id === itemId)) return;
-    setFlashCardId(itemId);
+    const cardKey = `${msg.id}:${itemId}`;
+    setFlashCardId(cardKey);
     if (flashTimerRef.current) clearTimeout(flashTimerRef.current);
     flashTimerRef.current = setTimeout(() => setFlashCardId(null), FLASH_MS);
-    requestAnimationFrame(() => scrollRef.current?.scrollToEnd({ animated: true }));
+    requestAnimationFrame(() => {
+      const card = cardRefs.current.get(cardKey);
+      const scroll = scrollRef.current;
+      const viewport = viewportRef.current;
+      if (!card || !scroll || !viewport) return;
+      card.measureInWindow((_cardX, cardY) => {
+        viewport.measureInWindow((_scrollX: number, scrollY: number) => {
+          const target = scrollOffsetRef.current + cardY - scrollY - 96;
+          scroll.scrollTo({ y: Math.max(0, target), animated: true });
+        });
+      });
+    });
   }
 
   function startNewChat(): void {
@@ -532,16 +617,20 @@ export default function ChatScreen() {
   }
 
   return (
-    <View style={{ flex: 1, backgroundColor: color.chatBg }}>
+    <KeyboardAvoidingView
+      style={{ flex: 1, backgroundColor: color.chatBg }}
+      behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+    >
       {/* Header: back | title | spacer (new chats start from the history drawer) */}
-      <View style={{ flexDirection: 'row', alignItems: 'center', paddingHorizontal: 18, paddingTop: 54, paddingBottom: space.md }}>
+      <View style={{ flexDirection: 'row', alignItems: 'center', paddingHorizontal: 18, paddingTop: insets.top + space.sm, paddingBottom: space.md }}>
         <Pressable
           onPress={() => router.replace('/(app)/home')}
+          accessibilityRole="button"
           accessibilityLabel="Back to home"
           hitSlop={8}
           style={{
-            width: 40,
-            height: 40,
+            width: 48,
+            height: 48,
             borderRadius: radius.pill,
             backgroundColor: alpha(color.cream, 0.1),
             borderWidth: 1.5,
@@ -562,11 +651,14 @@ export default function ChatScreen() {
         <Text style={{ flex: 1, fontFamily: font.script, fontSize: 30, color: color.cream, textAlign: 'center' }}>
           Spillthereel
         </Text>
-        <View style={{ width: 40 }} />
+        <View style={{ width: 48 }} />
       </View>
 
+      <View ref={viewportRef} collapsable={false} style={{ flex: 1 }}>
       <ScrollView
         ref={scrollRef}
+        onScroll={(event) => { scrollOffsetRef.current = event.nativeEvent.contentOffset.y; }}
+        scrollEventThrottle={16}
         onContentSizeChange={() => scrollRef.current?.scrollToEnd({ animated: true })}
         contentContainerStyle={{ paddingHorizontal: 18, paddingBottom: 122, gap: space.lg, flexGrow: messages.length === 0 ? 1 : undefined }}
         style={{ flex: 1 }}
@@ -597,7 +689,7 @@ export default function ChatScreen() {
                 padding: space.md,
               }}
             >
-              <Text style={{ fontFamily: font.body, fontSize: 14, lineHeight: 20, color: color.cream }}>{msg.text}</Text>
+              <Text style={{ fontFamily: font.body, fontSize: 16, lineHeight: 23, color: color.cream }}>{msg.text}</Text>
             </View>
           ) : (
             <View key={msg.id} style={{ flexDirection: 'row', gap: space.sm, alignItems: 'flex-start', maxWidth: '92%' }}>
@@ -621,17 +713,22 @@ export default function ChatScreen() {
                   <View style={{ gap: space.sm }}>
                     {msg.cards.map((card) => (
                       <ResultCard
-                        key={card.item_id}
+                        key={`${msg.id}:${card.item_id}`}
                         card={card}
-                        flashed={flashCardId === card.item_id}
+                        flashed={flashCardId === `${msg.id}:${card.item_id}`}
                         onOpen={() => openDeepLink(card.deep_link)}
+                        onRef={(node) => {
+                          const key = `${msg.id}:${card.item_id}`;
+                          if (node) cardRefs.current.set(key, node);
+                          else cardRefs.current.delete(key);
+                        }}
                       />
                     ))}
                   </View>
                 ) : null}
                 {msg.error ? (
                   <Pressable
-                    onPress={() => void sendMessage(msg.retryQuery ?? '')}
+                    onPress={() => void retrySearch(active?.id ?? '', msg.id, msg.retryQuery ?? '')}
                     accessibilityRole="button"
                     accessibilityLabel="Retry search"
                     style={{
@@ -680,21 +777,24 @@ export default function ChatScreen() {
                 borderWidth: 1,
                 borderColor: alpha(color.cream, 0.25),
                 borderRadius: radius.pill,
+                minHeight: 44,
                 paddingHorizontal: space.md + 2,
                 paddingVertical: space.sm,
               }}
             >
-              <Text style={{ fontFamily: font.display, fontSize: 11, color: color.cream }}>{chip}</Text>
+              <Text style={{ fontFamily: font.display, fontSize: 13, color: color.cream }}>{chip}</Text>
             </Pressable>
           ))}
         </ScrollView>
       </ScrollView>
+      </View>
 
       {/* Composer: hamburger (history) | input pill with mic/send morph.
           Hamburger and pill share one 52px row height so nothing misaligns. */}
-      <View style={{ position: 'absolute', left: 20, right: 20, bottom: 26, flexDirection: 'row', alignItems: 'center', gap: space.sm }}>
+      <View style={{ position: 'absolute', left: 20, right: 20, bottom: Math.max(insets.bottom, space.sm), flexDirection: 'row', alignItems: 'center', gap: space.sm }}>
         <Pressable
           onPress={() => setDrawerOpen(true)}
+          accessibilityRole="button"
           accessibilityLabel="Open chat history"
           hitSlop={6}
           style={{
@@ -716,7 +816,7 @@ export default function ChatScreen() {
         <View style={{ flex: 1 }}>
         {voiceHint ? (
           <Animated.View entering={FadeIn.duration(180)} exiting={FadeOut.duration(180)}>
-            <Text style={{ fontFamily: font.body, fontSize: 11.5, color: alpha(color.cream, 0.7), textAlign: 'center', marginBottom: 8 }}>
+              <Text style={{ fontFamily: font.body, fontSize: 13, lineHeight: 18, color: alpha(color.cream, 0.8), textAlign: 'center', marginBottom: 8 }}>
               Voice typing works on web — on this build, type instead.
             </Text>
           </Animated.View>
@@ -753,16 +853,20 @@ export default function ChatScreen() {
               onSubmitEditing={() => void sendMessage()}
               placeholder="Ask something to start"
               placeholderTextColor={alpha(color.cream, 0.55)}
-              style={{ flex: 1, fontFamily: font.body, fontSize: 14, color: color.cream, paddingVertical: 0, textAlignVertical: 'center' }}
+              accessibilityLabel="Ask about your saved items"
+              returnKeyType="search"
+              maxLength={MAX_QUERY_LENGTH}
+              style={{ flex: 1, fontFamily: font.body, fontSize: 16, color: color.cream, paddingVertical: 0, textAlignVertical: 'center' }}
             />
           )}
           {hasText && !listening ? (
             <Animated.View key="send" entering={ZoomIn.duration(160)}>
               <Pressable
                 onPress={() => void sendMessage()}
+                accessibilityRole="button"
                 accessibilityLabel="Send message"
-                hitSlop={6}
-                style={{ width: 32, height: 32, borderRadius: radius.pill, backgroundColor: color.coral, alignItems: 'center', justifyContent: 'center' }}
+                disabled={Boolean(thinkingFor)}
+                style={{ width: 44, height: 44, borderRadius: radius.pill, backgroundColor: thinkingFor ? alpha(color.coral, 0.55) : color.coral, alignItems: 'center', justifyContent: 'center' }}
               >
                 <Text style={{ fontSize: 15, color: color.white, lineHeight: 18 }}>→</Text>
               </Pressable>
@@ -772,9 +876,11 @@ export default function ChatScreen() {
               <Pressable
                 onPressIn={startListening}
                 onPressOut={stopListeningAndSend}
+                accessibilityRole="button"
                 accessibilityLabel="Hold to speak, release to send"
+                accessibilityHint={Platform.OS === 'web' ? 'Release to send the recognized words.' : 'Voice recognition is not available in this native build. Type a question instead.'}
                 hitSlop={6}
-                style={{ width: 36, height: 36, borderRadius: radius.pill, backgroundColor: color.coral, alignItems: 'center', justifyContent: 'center' }}
+                style={{ width: 44, height: 44, borderRadius: radius.pill, backgroundColor: color.coral, alignItems: 'center', justifyContent: 'center' }}
               >
                 <Svg width={17} height={17} viewBox="0 0 24 24">
                   <Rect x={9} y={2} width={6} height={11} rx={3} fill={color.white} />
@@ -813,7 +919,7 @@ export default function ChatScreen() {
               <Text style={{ fontFamily: font.display, fontSize: 12.5, color: color.white }}>+ NEW CHAT</Text>
             </Pressable>
             <ScrollView contentContainerStyle={{ gap: 4 }}>
-              {conversations.map((conv) => {
+              {visibleConversations.map((conv) => {
                 const isActive = conv.id === active?.id;
                 return (
                   <View
@@ -845,6 +951,6 @@ export default function ChatScreen() {
           </Animated.View>
         </View>
       ) : null}
-    </View>
+    </KeyboardAvoidingView>
   );
 }

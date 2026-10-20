@@ -18,7 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth.supabase_auth import SupabaseAuthError, verify_access_token
 from app.db.engine import get_session
-from app.db.models import Profile
+from app.db.models import Profile, UserDeletionJob
 from app.observability.logging import get_logger
 
 _logger = get_logger(__name__)
@@ -69,6 +69,19 @@ async def _current_user(
     profile = result.scalar_one_or_none()
 
     if profile is None:
+        # A completed or in-progress deletion tombstone must outlive the
+        # profile cascade. Existing JWTs may remain valid briefly after Auth
+        # Admin deletion, and must never recreate the account's profile.
+        deletion = await session.execute(
+            select(UserDeletionJob.user_id)
+            .where(UserDeletionJob.user_id == user_id)
+            .limit(1)
+        )
+        if deletion.scalar_one_or_none() is not None:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail={"code": "account_deleted", "message": "account deleted"},
+            )
         # First login for this UUID — Supabase already inserted the
         # auth.users row on OAuth callback; we mirror our profile row.
         # (In prod, the DB trigger `on_auth_user_created` handles this
@@ -81,7 +94,10 @@ async def _current_user(
         _logger.info("auth.profile_created", user_id=user_id)
     else:
         if profile.deleted_at is not None:
-            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="account deleted")
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail={"code": "account_deleted", "message": "account deleted"},
+            )
         # Keep the DB mirror in sync with user_metadata: renames from
         # signup / your-name / profile-edit / OAuth re-apply arrive here
         # as claims on the next authenticated call. Only write when the

@@ -30,11 +30,11 @@ def get_engine() -> AsyncEngine:
     global _engine
     if _engine is None:
         settings = get_settings()
-        # Supabase's transaction pooler (:6543) is pgbouncer in transaction
-        # mode — it doesn't support asyncpg's server-side prepared-statement
-        # cache. Disable it via connect_args so we can safely use the pooler
-        # for the app's OLTP traffic. `pool_pre_ping` is unnecessary since
-        # pgbouncer manages the underlying pool for us.
+        # Supabase's transaction pooler (:6543) uses pgbouncer transaction
+        # mode. Disable both asyncpg's native statement cache and SQLAlchemy's
+        # separate prepared-statement cache; either can retain a statement name
+        # whose backend connection has since been reassigned by the pooler.
+        # `pool_pre_ping` is unnecessary since pgbouncer manages the server pool.
         _engine = create_async_engine(
             settings.database_url,
             echo=settings.database_echo,
@@ -82,7 +82,12 @@ async def get_pg_pool() -> asyncpg.Pool:
     if _pg_pool is None:
         settings = get_settings()
         dsn = settings.database_url.replace("postgresql+asyncpg://", "postgresql://", 1)
-        _pg_pool = await asyncpg.create_pool(dsn, min_size=1, max_size=5)
+        # Same pooler constraint as get_engine above: pgbouncer in
+        # transaction mode invalidates server-side prepared statements
+        # between checkouts, so asyncpg must not cache them. Without this,
+        # pgvector search intermittently 500s with
+        # InvalidSQLStatementNameError (stale "__asyncpg_stmt_N__" refs).
+        _pg_pool = await asyncpg.create_pool(dsn, min_size=1, max_size=5, statement_cache_size=0)
     return _pg_pool
 
 

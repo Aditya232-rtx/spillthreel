@@ -23,12 +23,13 @@ import zipfile
 from collections.abc import Iterator
 from dataclasses import dataclass, field
 from datetime import datetime
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import TypedDict
 
 from bs4 import BeautifulSoup, PageElement, Tag
 
 from app.observability.logging import get_logger
+from app.settings import get_settings
 
 _logger = get_logger(__name__)
 
@@ -100,6 +101,54 @@ class ParserError(RuntimeError):
     """Malformed ZIP or missing expected files."""
 
 
+class ArchiveLimitError(ParserError):
+    """An archive exceeded configured resource or safety limits."""
+
+
+_TARGET_HTML = {"saved_posts.html", "saved_collections.html", "saved_music.html"}
+_READ_CHUNK_BYTES = 64 * 1024
+
+
+def _safe_member_name(name: str) -> str:
+    # ZIP uses POSIX paths, but archives produced on Windows may contain
+    # backslashes. Normalize both separators before checking for traversal.
+    normalized = name.replace("\\", "/")
+    path = PurePosixPath(normalized)
+    if (
+        not normalized
+        or "\x00" in normalized
+        or normalized.startswith("/")
+        or re.match(r"^[a-zA-Z]:", normalized)
+        or any(part in {"..", "."} for part in path.parts)
+    ):
+        raise ParserError("unsafe archive member path")
+    return path.name.lower()
+
+
+def _read_member_bounded(
+    zf: zipfile.ZipFile,
+    info: zipfile.ZipInfo,
+    *,
+    member_limit: int,
+    remaining_total: int,
+) -> bytes:
+    data = bytearray()
+    with zf.open(info) as fp:
+        while True:
+            # Read one byte beyond the remaining allowance so a forged
+            # central-directory size cannot bypass the actual-byte ceiling.
+            allowance = min(member_limit - len(data), remaining_total - len(data))
+            chunk = fp.read(min(_READ_CHUNK_BYTES, max(1, allowance + 1)))
+            if not chunk:
+                break
+            if len(data) + len(chunk) > member_limit:
+                raise ArchiveLimitError("archive member expanded beyond limit")
+            if len(data) + len(chunk) > remaining_total:
+                raise ArchiveLimitError("archive expanded beyond total limit")
+            data.extend(chunk)
+    return bytes(data)
+
+
 def parse_zip(zip_path: Path) -> ParsedExport:
     """Read the export ZIP → ParsedExport.
 
@@ -110,6 +159,7 @@ def parse_zip(zip_path: Path) -> ParsedExport:
     if not zip_path.exists():
         raise ParserError(f"zip not found: {zip_path}")
 
+    settings = get_settings()
     posts: list[SavedPost] = []
     collections: list[SavedCollection] = []
     audio: list[SavedAudio] = []
@@ -118,27 +168,63 @@ def parse_zip(zip_path: Path) -> ParsedExport:
     entries_with_unknowns = 0
     unknown_label_count = 0
 
-    with zipfile.ZipFile(zip_path) as zf:
-        for member in zf.namelist():
-            base = Path(member).name.lower()
+    try:
+        zf_context = zipfile.ZipFile(zip_path)
+    except (zipfile.BadZipFile, OSError) as exc:
+        raise ParserError("invalid archive") from exc
+    with zf_context as zf:
+        infos = zf.infolist()
+        if len(infos) > settings.import_max_archive_members:
+            raise ArchiveLimitError("archive contains too many members")
+        declared_total = 0
+        target_infos: dict[str, zipfile.ZipInfo] = {}
+        for info in infos:
+            base = _safe_member_name(info.filename)
+            if PurePosixPath(info.filename.replace("\\", "/")).suffix.lower() == ".zip":
+                raise ParserError("nested ZIP members are not supported")
+            if info.flag_bits & 0x1:
+                raise ParserError("encrypted archive members are not supported")
+            if info.file_size < 0 or info.compress_size < 0:
+                raise ParserError("invalid archive member size")
+            declared_total += info.file_size
+            if info.file_size > settings.import_max_member_uncompressed_bytes:
+                raise ArchiveLimitError("archive member exceeds expanded-size limit")
+            if declared_total > settings.import_max_uncompressed_bytes:
+                raise ArchiveLimitError("archive exceeds expanded-size limit")
+            if info.file_size:
+                ratio = info.file_size / max(1, info.compress_size)
+                if ratio > settings.import_max_compression_ratio:
+                    raise ArchiveLimitError("archive member compression ratio exceeds limit")
+            if base in _TARGET_HTML:
+                if base in target_infos:
+                    raise ParserError("duplicate import HTML member")
+                target_infos[base] = info
+        expanded_total = 0
+        for base, info in target_infos.items():
+            html = _read_member_bounded(
+                zf,
+                info,
+                member_limit=settings.import_max_member_uncompressed_bytes,
+                remaining_total=settings.import_max_uncompressed_bytes - expanded_total,
+            )
+            expanded_total += len(html)
+            if html.startswith(b"PK\x03\x04"):
+                raise ParserError("nested ZIP content is not supported")
             if base == "saved_posts.html":
-                with zf.open(member) as fp:
-                    html = fp.read()
                 for post in _iter_saved_posts(html, labels_seen):
                     posts.append(post)
+                    _check_parsed_count(posts, collections, audio, settings.import_max_parsed_entries)
                     if post.unknown_fields:
                         entries_with_unknowns += 1
                         unknown_label_count += len(post.unknown_fields)
             elif base == "saved_collections.html":
-                with zf.open(member) as fp:
-                    html = fp.read()
                 for coll in _iter_saved_collections(html, labels_seen):
                     collections.append(coll)
+                    _check_parsed_count(posts, collections, audio, settings.import_max_parsed_entries)
             elif base == "saved_music.html":
-                with zf.open(member) as fp:
-                    html = fp.read()
                 for a in _iter_saved_music(html):
                     audio.append(a)
+                    _check_parsed_count(posts, collections, audio, settings.import_max_parsed_entries)
 
     schema_hash = hashlib.sha256(",".join(sorted(labels_seen)).encode("utf-8")).hexdigest()[:16]
 
@@ -158,6 +244,17 @@ def parse_zip(zip_path: Path) -> ParsedExport:
         unknown_label_count=unknown_label_count,
         entries_with_unknowns=entries_with_unknowns,
     )
+
+
+def _check_parsed_count(
+    posts: list[SavedPost],
+    collections: list[SavedCollection],
+    audio: list[SavedAudio],
+    limit: int,
+) -> None:
+    count = len(posts) + len(audio) + sum(1 + len(collection.media) for collection in collections)
+    if count > limit:
+        raise ArchiveLimitError("archive contains too many parsed entries")
 
 
 # ---------------------------------------------------------------------------

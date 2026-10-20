@@ -11,6 +11,7 @@ from __future__ import annotations
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
+from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock
 
@@ -26,6 +27,7 @@ from app.db.models import Item, Profile
 from app.main import create_app
 from app.services.llm.base import StructuredSummary
 from app.tasks.local_dispatcher import dispatch_local
+from app.tasks.worker_claims import ClaimResult, WorkerIdentity, WorkerLease
 
 _TEST_USER_ID = "user-1"
 
@@ -63,10 +65,13 @@ class _FakeSession:
 
     def __init__(self, item: Item | None) -> None:
         self.item = item
+        self.profile = Profile(id=_TEST_USER_ID, display_name="Test User")
         self.added: list[Any] = []
         self.commits = 0
 
     async def execute(self, stmt: Any) -> _FakeResult:
+        if "profiles" in str(stmt).lower():
+            return _FakeResult(self.profile)  # type: ignore[arg-type]
         return _FakeResult(self.item)
 
     def add(self, obj: Any) -> None:
@@ -90,9 +95,13 @@ def _client_with(
     app = create_app()
     app.dependency_overrides[_current_user] = _override_user
     app.dependency_overrides[get_session] = _override_session
-    mock_enqueue = AsyncMock()
-    monkeypatch.setattr(items_module, "enqueue_task", mock_enqueue)
-    return TestClient(app), session, mock_enqueue
+    mock_dispatch = AsyncMock()
+    mock_record = AsyncMock(return_value=SimpleNamespace(id="outbox-1"))
+    mock_generation = AsyncMock(return_value=1)
+    monkeypatch.setattr(items_module, "dispatch_after_commit", mock_dispatch)
+    monkeypatch.setattr(items_module, "record_task_intent", mock_record)
+    monkeypatch.setattr(items_module, "next_generation", mock_generation)
+    return TestClient(app), session, mock_dispatch
 
 
 class TestRetry:
@@ -107,20 +116,16 @@ class TestRetry:
         assert item.state == "queued"
         assert item.failure_reason is None
         assert session.commits == 1
-        mock_enqueue.assert_awaited_once_with(
-            "ingest",
-            {"item_id": "item-1", "user_id": _TEST_USER_ID},
-            dedup_key="ingest-item-1",
-        )
+        mock_enqueue.assert_awaited_once_with(["outbox-1"])
 
-    def test_queued_is_idempotent_no_reenqueue(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        client, _, mock_enqueue = _client_with(_make_item("queued"), monkeypatch)
+    def test_queued_duplicate_reconciles_outbox(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        client, _, mock_dispatch = _client_with(_make_item("queued"), monkeypatch)
 
         resp = client.post("/v1/items/item-1/retry")
 
         assert resp.status_code == 200
         assert resp.json() == {"item_id": "item-1", "state": "queued"}
-        mock_enqueue.assert_not_awaited()
+        mock_dispatch.assert_not_awaited()
 
     @pytest.mark.parametrize(
         "state",
@@ -158,11 +163,7 @@ class TestEnhance:
         assert item.state == "indexing"
         assert item.failure_reason is None
         assert session.commits == 1
-        mock_enqueue.assert_awaited_once_with(
-            "enhance",
-            {"item_id": "item-1", "user_id": _TEST_USER_ID},
-            dedup_key="enhance-item-1",
-        )
+        mock_enqueue.assert_awaited_once_with(["outbox-1"])
 
     @pytest.mark.parametrize(
         "state", ["queued", "downloading", "analyzing", "indexing", "source_gone"]
@@ -190,35 +191,89 @@ class TestWorkerEnhance:
     def test_ok(self, monkeypatch: pytest.MonkeyPatch) -> None:
         mock = AsyncMock()
         monkeypatch.setattr(worker_entry_module, "enhance_item", mock)
+        lease = WorkerLease(
+            WorkerIdentity("job-1", "enhance", "item", "item-1", 2),
+            "item-1",
+            _TEST_USER_ID,
+            "token",
+        )
+        monkeypatch.setattr(
+            worker_entry_module,
+            "claim_worker",
+            AsyncMock(return_value=ClaimResult("claimed", lease)),
+        )
+        monkeypatch.setattr(worker_entry_module, "finalize_worker", AsyncMock(return_value=True))
         client = TestClient(create_app())
 
-        resp = client.post("/work/enhance", json={"item_id": "item-1"})
+        resp = client.post(
+            "/work/enhance",
+            json={"item_id": "item-1", "outbox_id": "job-1", "generation": 2},
+        )
 
         assert resp.status_code == 200
         assert resp.json() == {"status": "ok", "item_id": "item-1"}
-        mock.assert_awaited_once_with("item-1")
+        mock.assert_awaited_once_with("item-1", lease)
 
     def test_error_returns_500(self, monkeypatch: pytest.MonkeyPatch) -> None:
         mock = AsyncMock(side_effect=RuntimeError("llm down"))
         monkeypatch.setattr(worker_entry_module, "enhance_item", mock)
+        lease = WorkerLease(
+            WorkerIdentity("job-1", "enhance", "item", "item-1", 2),
+            "item-1",
+            _TEST_USER_ID,
+            "token",
+        )
+        monkeypatch.setattr(
+            worker_entry_module,
+            "claim_worker",
+            AsyncMock(return_value=ClaimResult("claimed", lease)),
+        )
+        finalize = AsyncMock(return_value=True)
+        monkeypatch.setattr(worker_entry_module, "finalize_worker", finalize)
         client = TestClient(create_app())
 
-        resp = client.post("/work/enhance", json={"item_id": "item-1"})
+        resp = client.post(
+            "/work/enhance",
+            json={"item_id": "item-1", "outbox_id": "job-1", "generation": 2},
+        )
 
         assert resp.status_code == 500
         assert "enhance_failed" in resp.json()["detail"]
+        finalize.assert_awaited_once_with(lease, status="pending", error_code="RuntimeError")
+
+    def test_legacy_delivery_is_acknowledged_without_provider(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        mock = AsyncMock(side_effect=AssertionError("provider must not run"))
+        monkeypatch.setattr(worker_entry_module, "enhance_item", mock)
+        client = TestClient(create_app())
+        resp = client.post("/work/enhance", json={"item_id": "item-1"})
+        assert resp.status_code == 200
+        assert resp.json() == {
+            "status": "noop",
+            "reason": "missing_identity",
+            "item_id": "item-1",
+        }
+        mock.assert_not_awaited()
 
 
 class TestLocalDispatcherEnhance:
     async def test_enhance_branch_routes_to_enhance_item(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        mock = AsyncMock()
-        monkeypatch.setattr(enhance_module, "enhance_item", mock)
+        mock = AsyncMock(return_value={"status": "busy", "item_id": "item-9"})
+        monkeypatch.setattr(worker_entry_module, "run_item_task", mock)
 
-        await dispatch_local("enhance", {"item_id": "item-9"})
+        result = await dispatch_local(
+            "enhance", {"item_id": "item-9", "outbox_id": "job-9", "generation": 7}
+        )
 
-        mock.assert_awaited_once_with("item-9")
+        assert result is True
+        args = mock.await_args.args
+        assert args[0] == "enhance"
+        assert args[1].item_id == "item-9"
+        assert args[1].outbox_id == "job-9"
+        assert args[1].generation == 7
 
 
 class _FakeSummaryModel:
@@ -253,7 +308,7 @@ def _patch_enhance_deps(
         def __init__(self, pool: Any) -> None:
             self._pool = pool
 
-        async def write(self, user_id: str, item: Any) -> str:
+        async def write(self, user_id: str, item: Any, **kwargs: Any) -> str:
             writes.append((user_id, item))
             return item.item_id
 
@@ -261,7 +316,21 @@ def _patch_enhance_deps(
     monkeypatch.setattr(enhance_module, "GeminiSummaryModel", lambda: model)
     monkeypatch.setattr(enhance_module, "PgVectorStore", _FakeStore)
     monkeypatch.setattr(enhance_module, "get_pg_pool", AsyncMock(return_value=object()))
+    monkeypatch.setattr(enhance_module, "lease_is_current", AsyncMock(return_value=True))
+    monkeypatch.setattr(enhance_module, "renew_worker_lease", AsyncMock(return_value=True))
+    monkeypatch.setattr(
+        enhance_module, "finalize_worker_in_session", AsyncMock(return_value=True)
+    )
     return model, writes
+
+
+def _test_lease() -> WorkerLease:
+    return WorkerLease(
+        WorkerIdentity("job-1", "enhance", "item", "item-1", 1),
+        "item-1",
+        _TEST_USER_ID,
+        "synthetic-token",
+    )
 
 
 class TestEnhanceItem:
@@ -273,7 +342,7 @@ class TestEnhanceItem:
         session = _FakeSession(item)
         model, writes = _patch_enhance_deps(monkeypatch, session)
 
-        await enhance_module.enhance_item("item-1")
+        await enhance_module.enhance_item("item-1", _test_lease())
 
         assert item.state == "fully_indexed"
         assert item.failure_reason is None
@@ -291,7 +360,7 @@ class TestEnhanceItem:
         model, writes = _patch_enhance_deps(monkeypatch, session)
 
         with pytest.raises(enhance_module.EnhanceError, match="no text to enhance"):
-            await enhance_module.enhance_item("item-1")
+            await enhance_module.enhance_item("item-1", _test_lease())
 
         item = session.item
         assert item is not None

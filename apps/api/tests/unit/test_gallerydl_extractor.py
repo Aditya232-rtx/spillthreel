@@ -22,6 +22,8 @@ from app.services.extractors import gallerydl as gallerydl_mod
 from app.services.extractors.base import ExtractorError
 from app.services.extractors.gallerydl import GalleryDlExtractor
 
+_PROXY = "http://proxy.internal:8080"
+
 
 @dataclass
 class _FakeSpec:
@@ -58,6 +60,7 @@ class _FakeProcess:
 
 def _install_fake(monkeypatch: pytest.MonkeyPatch, specs: list[_FakeSpec]) -> list[list[str]]:
     """Patch subprocess creation; return the captured argv lists."""
+    monkeypatch.setenv("EXTRACTOR_EGRESS_PROXY_URL", _PROXY)
     calls: list[list[str]] = []
     pending = list(specs)
 
@@ -125,14 +128,14 @@ async def test_timeout_raises_extractor_error(monkeypatch: pytest.MonkeyPatch) -
         await GalleryDlExtractor("instagram").extract("https://instagram.com/p/abc123")
 
 
-async def test_nonzero_exit_raises_with_stderr_tail(
+async def test_nonzero_exit_raises_without_untrusted_stderr(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _install_fake(
         monkeypatch,
         [_FakeSpec(returncode=1, stderr=b"error: 401 Unauthorized for gallery")],
     )
-    with pytest.raises(ExtractorError, match=r"exit 1.*401 Unauthorized"):
+    with pytest.raises(ExtractorError, match=r"exited with status 1"):
         await GalleryDlExtractor("x").extract("https://x.com/user/status/123")
 
 
@@ -148,7 +151,9 @@ async def test_error_messages_redact_query_tokens(
             "https://instagram.com/p/abc123?auth_token=supersecret&x=1"
         )
     assert "supersecret" not in str(exc_info.value)
-    assert "/p/abc123" in str(exc_info.value)
+    # Failure text is deliberately independent of extractor diagnostics and
+    # source URLs, even when only the query carries credentials.
+    assert "/p/abc123" not in str(exc_info.value)
 
 
 async def test_video_only_download_raises_not_mislabeled(

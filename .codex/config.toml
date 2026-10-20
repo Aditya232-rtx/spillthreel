@@ -1,0 +1,22 @@
+# Project-scoped tooling for SpillTheReel. No credentials belong in this file.
+[agents]
+enabled = true
+max_concurrent_threads_per_session = 3
+default_subagent_model = "gpt-6-luna"
+default_subagent_reasoning_effort = "high"
+
+[mcp_servers.supabase]
+url = "https://mcp.supabase.com/mcp?project_ref=fcefeiwvnzdfazwxdejy&features=docs%2Caccount%2Cdatabase%2Cdebugging%2Cdevelopment%2Cfunctions%2Cbranching"
+startup_timeout_sec = 60
+
+[mcp_servers.gcloud]
+command = "npx"
+args = ["-y", "@google-cloud/gcloud-mcp"]
+startup_timeout_sec = 60
+
+# Bright Data's /mcp endpoint is the Streamable HTTP equivalent of /sse.
+# Disabled until a real token is configured locally; never commit a token URL.
+# See docs/AGENT_SETUP.md for activation without editing tracked files.
+[mcp_servers.brightdata]
+url = "https://mcp.brightdata.com/mcp?token=YOUR_TOKEN_HERE&groups=advanced_scraping,social"
+enabled = false

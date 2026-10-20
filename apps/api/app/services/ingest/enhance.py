@@ -33,6 +33,12 @@ from app.services.llm.base import StructuredSummary
 from app.services.llm.gemini import GeminiSummaryModel
 from app.services.memory.base import IndexedItem
 from app.services.memory.pgvector_store import PgVectorStore
+from app.tasks.worker_claims import (
+    WorkerLease,
+    finalize_worker_in_session,
+    lease_is_current,
+    renew_worker_lease,
+)
 
 _logger = get_logger(__name__)
 
@@ -60,7 +66,7 @@ class _EnhanceSnapshot:
     owner_username: str | None
 
 
-async def enhance_item(item_id: str) -> None:
+async def enhance_item(item_id: str, lease: WorkerLease) -> None:
     """Re-run analyze→index for one item id.
 
     Idempotent-ish: already `fully_indexed` is a no-op (duplicate
@@ -68,6 +74,8 @@ async def enhance_item(item_id: str) -> None:
     re-raise so Cloud Tasks retries at the queue level.
     """
     async with session_scope() as session:
+        if not await lease_is_current(session, lease):
+            return
         stmt = select(Item).where(Item.id == item_id).with_for_update()
         row = (await session.execute(stmt)).scalar_one_or_none()
         if row is None:
@@ -103,14 +111,14 @@ async def enhance_item(item_id: str) -> None:
         )
 
     try:
-        await _run(snapshot)
+        await _run(snapshot, lease)
     except Exception as e:
         _logger.exception("enhance.failed", item_id=item_id, err=str(e))
-        await _mark_failed(item_id, str(e)[:500])
+        await _mark_failed(item_id, str(e)[:500], lease)
         raise
 
 
-async def _run(snapshot: _EnhanceSnapshot) -> None:
+async def _run(snapshot: _EnhanceSnapshot, lease: WorkerLease) -> None:
     # Analyze: the row's existing text is the whole input — no media to
     # re-download. Empty rows (nothing extracted yet) fail loudly with a
     # debuggable reason instead of embedding an empty corpus.
@@ -126,6 +134,8 @@ async def _run(snapshot: _EnhanceSnapshot) -> None:
     )
     if not source_text.strip():
         raise EnhanceError("no text to enhance")
+    if not await renew_worker_lease(lease):
+        raise EnhanceError("worker lease lost")
     summary: StructuredSummary = await GeminiSummaryModel().summarize(
         frames=[], audio=None, transcript=source_text
     )
@@ -167,11 +177,14 @@ async def _run(snapshot: _EnhanceSnapshot) -> None:
                 "owner_username": snapshot.owner_username,
             },
         ),
+        worker_lease=lease,
     )
 
     # Hydrate the row + audit event (mirrors pipeline._mark_fully_indexed,
     # minus the thumbnail upload which enhance skips).
     async with session_scope() as session:
+        if not await lease_is_current(session, lease):
+            raise EnhanceError("worker lease lost before completion")
         item = (await session.execute(select(Item).where(Item.id == snapshot.item_id))).scalar_one()
         item_prev = item.state
         item.state = "fully_indexed"
@@ -192,15 +205,19 @@ async def _run(snapshot: _EnhanceSnapshot) -> None:
                 detail={"trigger": "enhance"},
             )
         )
+        if not await finalize_worker_in_session(session, lease, status="completed"):
+            raise EnhanceError("worker lease lost before completion")
         await session.commit()
 
     _logger.info("enhance.completed", item_id=snapshot.item_id, user_id=snapshot.user_id)
 
 
-async def _mark_failed(item_id: str, reason: str) -> None:
+async def _mark_failed(item_id: str, reason: str, lease: WorkerLease) -> None:
     """Mirror of pipeline._mark_failed — kept local so this module never
     imports pipeline (which would drag yt-dlp onto the api image)."""
     async with session_scope() as session:
+        if not await lease_is_current(session, lease):
+            return
         item = (await session.execute(select(Item).where(Item.id == item_id))).scalar_one_or_none()
         if item is None:
             return

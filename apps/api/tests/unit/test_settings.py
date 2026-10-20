@@ -44,3 +44,18 @@ class TestWorkerBaseUrlEmptyString:
     def test_real_url_preserved(self) -> None:
         url = "https://worker-abc123-uc.a.run.app"
         assert _settings(worker_base_url=url).worker_base_url == url
+
+
+def test_extractor_egress_proxy_is_separate_from_provider_proxy() -> None:
+    assert _settings().extractor_egress_proxy_url is None
+    assert (
+        _settings(extractor_egress_proxy_url="http://egress-proxy.internal:8080")
+        .extractor_egress_proxy_url
+        == "http://egress-proxy.internal:8080"
+    )
+    assert _settings(outbound_proxy_url="http://provider-proxy.internal:8080").extractor_egress_proxy_url is None
+
+
+def test_supabase_service_key_is_optional_for_database_only_runtimes() -> None:
+    assert _settings().supabase_secret_key == "sb_secret_test"
+    assert _settings(supabase_secret_key=None).supabase_secret_key is None
